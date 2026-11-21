@@ -1,6 +1,0 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-html, body, #root { height: 100%; margin: 0; overflow: hidden; cursor: none; user-select: none; }
-body { font-family: 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif; color: #eaf0ff; }
-@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
