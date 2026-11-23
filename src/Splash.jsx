@@ -14,8 +14,8 @@ const rng = (seed) => () => {
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 };
 
-const GOLD = "245,208,138", ICE = "232,241,255", COBALT = "59,130,246";
-const PALETTE = [GOLD, ICE, COBALT];
+const PINK = "240,110,210", VIOLET = "139,92,246", PERI = "104,138,255", LAV = "233,228,255";
+const PALETTE = [PINK, PERI, VIOLET, LAV];
 
 function makeSprite(rgb, hard) {
   const c = document.createElement("canvas");
@@ -166,42 +166,47 @@ function createAudio(getMuted) {
 }
 
 /* ───────────── component ───────────── */
-export default function StartupAnimation({ onComplete }) {
-  const [runId, setRunId] = useState(0);
+const FONT = 'Lexend, Outfit, Inter, "SF Pro Display", "Segoe UI", system-ui, sans-serif';
+const TITLE = "Console shell";
+const srOnly = { position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap" };
+
+const glow = (g2, x, y, rad, stops) => {
+  const g = g2.createRadialGradient(x, y, 0, x, y, rad);
+  stops.forEach(([o, col]) => g.addColorStop(o, col));
+  g2.fillStyle = g; g2.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+};
+
+export default function StartupAnimation({ onComplete, children }) {
   const [done, setDone] = useState(false);
-  const [muted, setMuted] = useState(false);
-  const layerRef = useRef(null), canvasRef = useRef(null), titleRef = useRef(null), hintRef = useRef(null);
-  const audioRef = useRef(null), mutedRef = useRef(false), cbRef = useRef(onComplete);
+  const layerRef = useRef(null), canvasRef = useRef(null), hintRef = useRef(null);
+  const cbRef = useRef(onComplete);
   cbRef.current = onComplete;
-  mutedRef.current = muted;
-  const preview = typeof onComplete !== "function";
 
   useEffect(() => {
-    const layer = layerRef.current, canvas = canvasRef.current, title = titleRef.current, hint = hintRef.current;
-    const c = canvas.getContext("2d");
-    let W = 0, H = 0, cx = 0, cy = 0, minD = 0, lineY = 0, dpr = 1;
+    const layer = layerRef.current, canvas = canvasRef.current, hint = hintRef.current;
+    const c = canvas.getContext("2d", { alpha: false });
+    // half-cost tricks: soft lighting lives on a quarter-res buffer, the title on its own small canvas
+    const bg = document.createElement("canvas"), bc = bg.getContext("2d");
+    const tx = document.createElement("canvas"), tc = tx.getContext("2d");
+    let W = 0, H = 0, cx = 0, cy = 0, minD = 0, lineY = 0, dpr = 1, fs = 60, tcw = 0, tch = 0, advs = [], advSum = 0;
     let raf = 0, start = null, skipAt = null, finished = false, stopped = false, scheduled = false;
+    let lowQ = false, dustN = 300, bokehN = 44, STR = 8, NP = 56, prev = 0, slow = 0;
 
-    const sprites = {
-      soft: PALETTE.map((p) => makeSprite(p, false)),
-      hard: PALETTE.map((p) => makeSprite(p, true)),
-    };
+    const sprites = { soft: PALETTE.map((p) => makeSprite(p, false)), hard: PALETTE.map((p) => makeSprite(p, true)) };
     const r = rng(1234);
-    const bokeh = Array.from({ length: 64 }, () => {
+    const bokeh = Array.from({ length: 44 }, () => {
       const z = 0.1 + 0.9 * r();
-      return { x: r(), y: r(), z, ph: r() * 6.28, col: Math.floor(r() * 3), a: 0.1 + 0.18 * r(),
+      return { x: r(), y: r(), z, ph: r() * 6.28, col: Math.floor(r() * 4), a: 0.1 + 0.18 * r(),
         vx: (r() - 0.5) * 0.012 * (0.4 + z), vy: -(0.004 + 0.012 * z) };
     });
-    const dust = Array.from({ length: 520 }, () => ({
+    const dust = Array.from({ length: 300 }, () => ({
       u: r(), k: r(), l: Math.floor(r() * 3), ph: r() * 6.28, a1: 0.6 + r() * 1.6, a2: 0.5 + r() * 1.6,
-      rad: 4 + Math.pow(r(), 2) * 46, sz: 0.5 + r() * 1.6, col: [0, 1, 1, 2][Math.floor(r() * 4)], d: r(),
+      rad: 4 + Math.pow(r(), 2) * 46, sz: 0.5 + r() * 1.5, col: [0, 0, 1, 3, 2][Math.floor(r() * 5)], d: r(),
     }));
-
     const elapsed = () => (start == null ? 0 : Math.max(0, (performance.now() - start) / 1000));
 
     /* audio */
-    const audio = createAudio(() => mutedRef.current);
-    audioRef.current = audio;
+    const audio = createAudio(() => false);
     const tryStart = () => {
       if (!audio || scheduled || stopped || audio.ctx.state !== "running") return;
       scheduled = true; audio.schedule(elapsed());
@@ -214,13 +219,23 @@ export default function StartupAnimation({ onComplete }) {
 
     /* layout */
     const resize = () => {
-      dpr = Math.min(window.devicePixelRatio || 1, 3);
+      if (finished) return;
+      dpr = Math.min(window.devicePixelRatio || 1, lowQ ? 1 : 1.5);
       W = layer.clientWidth; H = layer.clientHeight;
       canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
       canvas.style.width = W + "px"; canvas.style.height = H + "px";
       c.setTransform(dpr, 0, 0, dpr, 0, 0);
+      bg.width = Math.ceil(W / 4); bg.height = Math.ceil(H / 4);
+      bc.setTransform(bg.width / W, 0, 0, bg.height / H, 0, 0);
       cx = W / 2; cy = H / 2; minD = Math.min(W, H);
-      lineY = cy + title.offsetHeight * 1.05;
+      fs = clamp(W * 0.056, 30, 76);
+      tcw = Math.ceil(fs * 17); tch = Math.ceil(fs * 2.6);
+      tx.width = Math.round(tcw * dpr); tx.height = Math.round(tch * dpr);
+      tc.setTransform(dpr, 0, 0, dpr, 0, 0);
+      tc.font = `400 ${fs}px ${FONT}`; tc.textBaseline = "middle";
+      advs = [...TITLE].map((ch) => tc.measureText(ch).width);
+      advSum = advs.reduce((a, b) => a + b, 0);
+      lineY = cy + fs * 0.95;
     };
     resize();
     window.addEventListener("resize", resize);
@@ -245,71 +260,89 @@ export default function StartupAnimation({ onComplete }) {
       if (typeof cbRef.current === "function") cbRef.current();
     };
 
-    /* scene */
-    const glow = (x, y, rad, stops) => {
-      const g = c.createRadialGradient(x, y, 0, x, y, rad);
-      stops.forEach(([o, col]) => g.addColorStop(o, col));
-      c.fillStyle = g; c.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+    /* title: per-glyph on its own canvas (no DOM layout), with a diagonal glass sheen */
+    const drawTitle = (t) => {
+      const tt = t - 3.7;
+      if (tt < -0.01) return;
+      const ls = lerp(0.38, 0.22, easeOutCubic(tt / 1.4)) * fs;
+      const total = advSum + ls * (advs.length - 1), x0 = tcw / 2 - total / 2;
+      tc.globalCompositeOperation = "source-over";
+      tc.clearRect(0, 0, tcw, tch);
+      tc.shadowColor = `rgba(${VIOLET},.6)`; tc.shadowBlur = fs * 0.35; tc.fillStyle = "#f8fafc";
+      let x = x0;
+      for (let i = 0; i < advs.length; i++) { tc.fillText(TITLE[i], x, tch / 2); x += advs[i] + ls; }
+      tc.shadowBlur = 0;
+      const p = lerp(-0.3, 1.3, easeInOutCubic((t - 4.0) / 1.0)), bx = x0 + total * p;
+      if (p > -0.29 && p < 1.29) {
+        const g = tc.createLinearGradient(bx - fs * 0.7, tch * 0.1, bx + fs * 0.7, tch * 0.9);
+        g.addColorStop(0, `rgba(${PINK},0)`); g.addColorStop(0.5, "rgba(255,240,252,.95)"); g.addColorStop(1, `rgba(${PERI},0)`);
+        tc.globalCompositeOperation = "source-atop"; tc.fillStyle = g; tc.fillRect(0, 0, tcw, tch);
+      }
+      const op = smooth(3.7, 4.5, t) * (t > 4.8 ? 0.93 + 0.07 * Math.sin((t - 4.8) * 2.6) : 1);
+      c.globalCompositeOperation = "source-over"; c.globalAlpha = op;
+      c.drawImage(tx, cx - tcw / 2, cy - tch / 2 + lerp(12, 0, easeOutCubic(tt / 1.2)), tcw, tch);
+      c.globalAlpha = 1;
     };
 
     const draw = (t) => {
-      c.globalCompositeOperation = "source-over";
-      c.fillStyle = "#040508"; c.fillRect(0, 0, W, H);
-      const nv = smooth(0.8, 2.6, t) * (1 - smooth(3.8, 5.8, t));
-      if (nv > 0.001) glow(cx, cy, Math.max(W, H) * 0.75, [[0, `rgba(8,13,26,${nv})`], [1, "rgba(4,5,8,0)"]]);
-      c.globalCompositeOperation = "lighter";
-
-      const cc = easeOutCubic((t - 3.4) / 1.4);       // convergence
-      const env = 1 - cc, sq = 1 - 0.82 * cc;
-      const h = 1.12 * easeInOutCubic((t - 1.2) / 1.6); // ribbon head
+      const cc = easeOutCubic((t - 3.4) / 1.4), env = 1 - cc, sq = 1 - 0.82 * cc;
+      const h = 1.12 * easeInOutCubic((t - 1.2) / 1.6);
       const ribFade = 1 - smooth(4.3, 4.9, t);
       const mid = smooth(1.4, 2.2, t) * (1 - smooth(3.4, 4.2, t));
-
-      // ambient breathing core
+      const nv = smooth(0.8, 2.6, t) * (1 - smooth(3.8, 5.8, t));
+      const P = Math.exp(-Math.pow((t - 3.78) / (t < 3.78 ? 0.22 : 0.75), 2));
+      const F = P + 0.22 * smooth(3.8, 4.6, t) * (1 - smooth(5.4, 6, t)) * (0.85 + 0.15 * Math.sin(t * 2.2));
+      const tg = smooth(3.7, 4.6, t) * (0.85 + 0.15 * Math.sin(t * 2.2));
       const amb = smooth(0, 0.6, t) * (1 - smooth(2.2, 3.4, t)) * (0.55 + 0.45 * Math.sin(t * 3.1));
-      if (amb > 0.001) glow(cx, cy, minD * 0.38, [[0, `rgba(${ICE},${0.1 * amb})`], [0.35, `rgba(${COBALT},${0.07 * amb})`], [1, `rgba(${COBALT},0)`]]);
 
-      // caustic gradient layers + volumetric streaks
+      /* soft lighting on the quarter-res buffer */
+      bc.globalCompositeOperation = "source-over";
+      bc.fillStyle = "#05061c"; bc.fillRect(0, 0, W, H);
+      if (nv > 0.001) glow(bc, cx, cy, Math.max(W, H) * 0.75, [[0, `rgba(18,24,118,${nv})`], [1, "rgba(5,6,28,0)"]]);
+      bc.globalCompositeOperation = "lighter";
+      if (amb > 0.001) glow(bc, cx, cy, minD * 0.38, [[0, `rgba(${LAV},${0.12 * amb})`], [0.35, `rgba(${VIOLET},${0.1 * amb})`], [1, `rgba(${VIOLET},0)`]]);
       if (mid > 0.001) {
-        [[GOLD, 0.9, 0.0], [COBALT, 0.7, 2.1], [ICE, 0.5, 4.0]].forEach(([col, k, ph], i) => {
-          glow(cx + Math.sin(t * 0.5 * k + ph) * W * 0.28, cy + Math.cos(t * 0.4 * k + ph) * H * 0.2, minD * (0.4 + i * 0.08),
-            [[0, `rgba(${col},${0.06 * mid})`], [1, `rgba(${col},0)`]]);
-        });
-        c.save(); c.translate(cx, cy); c.rotate(-0.32);
-        for (let i = 0; i < 5; i++) {
-          const w = 120 + i * 50, x = Math.sin(t * 0.25 + i * 1.7) * W * 0.4, col = i % 2 ? COBALT : GOLD;
-          const g = c.createLinearGradient(x - w / 2, 0, x + w / 2, 0);
-          g.addColorStop(0, `rgba(${col},0)`); g.addColorStop(0.5, `rgba(${col},${0.035 * mid})`); g.addColorStop(1, `rgba(${col},0)`);
-          c.fillStyle = g; c.fillRect(x - w / 2, -H, w, H * 2);
+        [[PINK, 0.9, 0], [VIOLET, 0.7, 2.1], [PERI, 0.5, 4]].forEach(([col, k, ph], i) =>
+          glow(bc, cx + Math.sin(t * 0.5 * k + ph) * W * 0.28, cy + Math.cos(t * 0.4 * k + ph) * H * 0.2, minD * (0.4 + i * 0.08),
+            [[0, `rgba(${col},${0.1 * mid})`], [1, `rgba(${col},0)`]]));
+        bc.save(); bc.translate(cx, cy); bc.rotate(-0.32);
+        for (let i = 0; i < 4; i++) {
+          const w = 130 + i * 55, x = Math.sin(t * 0.25 + i * 1.7) * W * 0.4, col = i % 2 ? PERI : PINK;
+          const g = bc.createLinearGradient(x - w / 2, 0, x + w / 2, 0);
+          g.addColorStop(0, `rgba(${col},0)`); g.addColorStop(0.5, `rgba(${col},${0.05 * mid})`); g.addColorStop(1, `rgba(${col},0)`);
+          bc.fillStyle = g; bc.fillRect(x - w / 2, -H, w, H * 2);
         }
-        c.restore();
+        bc.restore();
       }
+      if (F > 0.002) glow(bc, cx, cy, minD * (0.22 + 0.22 * P), [[0, `rgba(255,236,252,${0.85 * Math.min(F, 1)})`], [0.25, `rgba(${PINK},${0.32 * F})`], [0.6, `rgba(${VIOLET},${0.14 * F})`], [1, `rgba(${VIOLET},0)`]]);
+      if (tg > 0.001) glow(bc, cx, cy, minD * 0.3, [[0, `rgba(${PINK},${0.09 * tg})`], [0.5, `rgba(${PERI},${0.07 * tg})`], [1, `rgba(${PERI},0)`]]);
 
-      // bokeh in 3D parallax
-      const pullB = Math.sin(Math.PI * clamp((t - 3.4) / 1.6));
-      const fadeIn = smooth(0.1, 1.0, t);
-      bokeh.forEach((p, i) => {
+      c.globalCompositeOperation = "source-over"; c.globalAlpha = 1;
+      c.drawImage(bg, 0, 0, W, H);
+      c.globalCompositeOperation = "lighter";
+
+      /* bokeh (3D parallax) */
+      const pullB = Math.sin(Math.PI * clamp((t - 3.4) / 1.6)), fadeIn = smooth(0.1, 1.0, t);
+      for (let i = 0; i < bokehN; i++) {
+        const p = bokeh[i];
         const x = ((((p.x + p.vx * t) % 1.2) + 1.2) % 1.2 - 0.1) * W + Math.sin(t * 0.25 + p.ph) * p.z * 18;
         const y = ((((p.y + p.vy * t) % 1.2) + 1.2) % 1.2 - 0.1) * H;
-        const k = pullB * 0.4 * p.z;
-        const px = lerp(x, cx, k), py = lerp(y, cy, k);
-        const s = (6 + 80 * p.z * p.z) * (minD / 900) + 3;
+        const k = pullB * 0.4 * p.z, s = (6 + 80 * p.z * p.z) * (minD / 900) + 3;
         const sparse = i % 3 === 0 ? 1 : 1 - 0.65 * smooth(4.4, 5.4, t);
         c.globalAlpha = p.a * fadeIn * sparse * (0.75 + 0.25 * Math.sin(t * 0.8 + p.ph));
-        c.drawImage((p.z > 0.55 ? sprites.soft : sprites.hard)[p.col], px - s, py - s, s * 2, s * 2);
-      });
+        c.drawImage((p.z > 0.55 ? sprites.soft : sprites.hard)[p.col], lerp(x, cx, k) - s, lerp(y, cy, k) - s, s * 2, s * 2);
+      }
       c.globalAlpha = 1;
 
-      // silk ribbon
+      /* silk ribbon: one stroke per layer */
       const rp = (x01, L, k) => {
         const x = cx + (lerp(-0.05 * W, 1.05 * W, x01) - cx) * sq;
         const taper = 0.4 + 0.6 * Math.sin(Math.PI * x01);
         const wave = H * 0.16 * env * taper * (0.9 * Math.sin(x01 * 5.2 + t * 1.25 + L * 1.7) + 0.4 * Math.sin(x01 * 11.3 - t * 0.9 + L * 0.6));
-        const twist = (k - 0.5) * (H * 0.07 * env + 1.5) * Math.sin(x01 * 4 + t * 0.7 + L * 2.1);
-        return [x, cy + wave + twist];
+        return [x, cy + wave + (k - 0.5) * (H * 0.07 * env + 1.5) * Math.sin(x01 * 4 + t * 0.7 + L * 2.1)];
       };
       if (h > 0.07 && ribFade > 0.002) {
-        const hx = Math.min(h, 1.0), tail = h >= 1.0;
+        const hx = Math.min(h, 1), tail = h >= 1;
         const gx0 = cx + (-0.05 * W - cx) * sq, gx1 = cx + (1.05 * W - cx) * sq;
         const mk = (col, A) => {
           const g = c.createLinearGradient(gx0, 0, gx1, 0), z = `rgba(${col},0)`, a = `rgba(${col},${A})`;
@@ -318,172 +351,40 @@ export default function StartupAnimation({ onComplete }) {
           else { g.addColorStop(Math.max(0.061, hx - 0.14), a); g.addColorStop(Math.max(0.062, hx), z); g.addColorStop(1, z); }
           return g;
         };
+        c.lineCap = "round"; c.lineJoin = "round";
         for (let L = 0; L < 3; L++) {
-          const col = PALETTE[L], A = [0.17, 0.15, 0.2][L] * ribFade;
-          c.lineCap = "round"; c.lineJoin = "round";
-          const trace = (k) => {
-            c.beginPath();
-            for (let i = 0; i <= 70; i++) { const [x, y] = rp(i / 70, L, k); i ? c.lineTo(x, y) : c.moveTo(x, y); }
-            c.stroke();
-          };
-          c.strokeStyle = mk(col, A * 0.4); c.lineWidth = 12; trace(0.5);
-          c.strokeStyle = mk(col, A); c.lineWidth = 1;
-          for (let s = 0; s < 14; s++) trace(s / 13);
+          const col = [PINK, LAV, VIOLET][L], A = [0.2, 0.16, 0.26][L] * ribFade;
+          c.strokeStyle = mk(col, A * 0.4); c.lineWidth = 9;
+          c.beginPath();
+          for (let i = 0; i <= NP; i++) { const [x, y] = rp(i / NP, L, 0.5); i ? c.lineTo(x, y) : c.moveTo(x, y); }
+          c.stroke();
+          c.strokeStyle = mk(col, A); c.lineWidth = 1; c.beginPath();
+          for (let s = 0; s < STR; s++) for (let i = 0; i <= NP; i++) { const [x, y] = rp(i / NP, L, s / (STR - 1)); i ? c.lineTo(x, y) : c.moveTo(x, y); }
+          c.stroke();
         }
       }
 
-      // zero-gravity dust with curl/sine turbulence → converging
-      dust.forEach((p) => {
-        const age = (h - p.u) * 1.6;
-        if (age <= 0) return;
+      /* dust: curl/sine turbulence, then converge */
+      for (let n = 0; n < dustN; n++) {
+        const p = dust[n], age = (h - p.u) * 1.6;
+        if (age <= 0) continue;
         const cpi = easeOutCubic((t - 3.4 - p.d * 0.5) / 1.3);
         const fade = (1 - smooth(0.82, 1, cpi)) * (1 - smooth(4.3, 4.9, t));
-        if (fade < 0.01) return;
-        const [bx, by] = rp(p.u, p.l, p.k);
-        const sp = p.rad * (0.4 + Math.min(age, 1.2));
+        if (fade < 0.01) continue;
+        const [bx, by] = rp(p.u, p.l, p.k), sp = p.rad * (0.4 + Math.min(age, 1.2));
         let x = bx + sp * Math.sin(t * p.a1 + p.ph + by * 0.012);
         let y = by + sp * Math.cos(t * p.a2 + p.ph * 1.3 + bx * 0.012) - Math.min(age, 1.5) * 8;
-        const ang = Math.sin(cpi * Math.PI) * 0.9 * (p.d + 0.4), co = Math.cos(ang), si = Math.sin(ang);
-        const vx = x - cx, vy = y - cy;
+        const ang = Math.sin(cpi * Math.PI) * 0.9 * (p.d + 0.4), co = Math.cos(ang), si = Math.sin(ang), vx = x - cx, vy = y - cy;
         x = cx + (vx * co - vy * si) * (1 - cpi); y = cy + (vx * si + vy * co) * (1 - cpi);
-        const tw = 0.5 + 0.5 * Math.sin(t * (3 + p.a2 * 3) + p.ph);
-        c.globalAlpha = smooth(0, 0.3, age) * (0.25 + 0.75 * tw) * fade * 0.9;
+        c.globalAlpha = smooth(0, 0.3, age) * (0.25 + 0.75 * (0.5 + 0.5 * Math.sin(t * (3 + p.a2 * 3) + p.ph))) * fade * 0.9;
         const s = p.sz * 3;
         c.drawImage(sprites.soft[p.col], x - s, y - s, s * 2, s * 2);
-      });
+      }
       c.globalAlpha = 1;
 
-      // optical flare at 3.7s
-      const sg = t < 3.78 ? 0.22 : 0.75;
-      const P = Math.exp(-Math.pow((t - 3.78) / sg, 2));
-      const hold = 0.22 * smooth(3.8, 4.6, t) * (1 - smooth(5.4, 6, t)) * (0.85 + 0.15 * Math.sin(t * 2.2));
-      const F = P + hold;
-      if (F > 0.002) {
-        const R = minD * (0.22 + 0.22 * P);
-        glow(cx, cy, R, [[0, `rgba(255,244,220,${0.85 * Math.min(F, 1)})`], [0.25, `rgba(${GOLD},${0.3 * F})`], [0.6, `rgba(${COBALT},${0.09 * F})`], [1, `rgba(${COBALT},0)`]]);
+      /* flare streak + ring */
+      if (P > 0.01) {
         c.save(); c.translate(cx, cy); c.scale(1, 0.035);
         const sr = W * 0.5, g = c.createRadialGradient(0, 0, 0, 0, 0, sr);
-        g.addColorStop(0, `rgba(${ICE},${0.75 * P})`); g.addColorStop(0.3, `rgba(${GOLD},${0.25 * P})`); g.addColorStop(1, `rgba(${GOLD},0)`);
-        c.fillStyle = g; c.fillRect(-sr, -sr, sr * 2, sr * 2); c.restore();
-      }
-      const tf = (t - 3.7) / 1.0;
-      if (tf > 0 && tf < 1) {
-        c.strokeStyle = `rgba(${ICE},${0.2 * (1 - tf)})`; c.lineWidth = 1;
-        c.beginPath(); c.arc(cx, cy, minD * 0.4 * easeOutCubic(tf), 0, 6.2832); c.stroke();
-      }
-
-      // behind-title glow + light hairline
-      const tg = smooth(3.7, 4.6, t) * (0.85 + 0.15 * Math.sin(t * 2.2));
-      if (tg > 0.001) glow(cx, cy, minD * 0.3, [[0, `rgba(${GOLD},${0.07 * tg})`], [0.5, `rgba(${COBALT},${0.05 * tg})`], [1, `rgba(${COBALT},0)`]]);
-      const hw = Math.min(W * 0.34, 420) * easeOutCubic((t - 3.9) / 1.0);
-      if (hw > 1) {
-        const a = smooth(3.9, 4.3, t);
-        const g = c.createLinearGradient(cx - hw, 0, cx + hw, 0);
-        g.addColorStop(0, `rgba(${ICE},0)`); g.addColorStop(0.5, `rgba(${ICE},${0.8 * a})`); g.addColorStop(1, `rgba(${ICE},0)`);
-        c.strokeStyle = g; c.lineWidth = 1;
-        c.beginPath(); c.moveTo(cx - hw, lineY); c.lineTo(cx + hw, lineY); c.stroke();
-        const g2 = c.createLinearGradient(cx - hw, 0, cx + hw, 0);
-        g2.addColorStop(0, `rgba(${GOLD},0)`); g2.addColorStop(0.5, `rgba(${GOLD},${0.18 * a})`); g2.addColorStop(1, `rgba(${GOLD},0)`);
-        c.strokeStyle = g2; c.lineWidth = 4;
-        c.beginPath(); c.moveTo(cx - hw, lineY); c.lineTo(cx + hw, lineY); c.stroke();
-      }
-      c.globalCompositeOperation = "source-over";
-    };
-
-    const updateDom = (t) => {
-      const tt = t - 3.7;
-      const ls = lerp(0.38, 0.22, easeOutCubic(tt / 1.4));
-      const breath = t > 4.8 ? 0.93 + 0.07 * Math.sin((t - 4.8) * 2.6) : 1;
-      const p = lerp(-30, 130, easeInOutCubic((t - 4.0) / 1.0));
-      title.style.opacity = String(smooth(3.7, 4.5, t) * breath);
-      title.style.transform = `translate3d(0,${lerp(12, 0, easeOutCubic(tt / 1.2)).toFixed(2)}px,0)`;
-      title.style.letterSpacing = ls + "em";
-      title.style.paddingLeft = ls + "em";
-      title.style.backgroundImage =
-        `linear-gradient(105deg,#f8fafc ${p - 14}%,#ffe7b0 ${p - 3}%,#ffffff ${p}%,#cfe2ff ${p + 4}%,#f8fafc ${p + 14}%)`;
-      hint.style.opacity = skipAt != null ? "0" : String(smooth(1, 1.3, t) * (1 - smooth(2.5, 3, t)));
-      let f = smooth(5.4, 6.0, t);
-      if (skipAt != null) f = Math.max(f, clamp((t - skipAt) / 0.35));
-      layer.style.opacity = String(1 - f);
-      layer.style.transform = `scale(${(1 + 0.03 * f).toFixed(4)})`;
-    };
-
-    const frame = (now) => {
-      if (stopped) return;
-      if (start == null) start = now;
-      const t = Math.min((now - start) / 1000, DURATION);
-      draw(t); updateDom(t);
-      if ((now - start) / 1000 >= DURATION || (skipAt != null && (now - start) / 1000 >= skipAt + 0.35)) finish();
-      else raf = requestAnimationFrame(frame);
-    };
-    raf = requestAnimationFrame(frame);
-
-    return () => {
-      stopped = true;
-      cancelAnimationFrame(raf);
-      window.removeEventListener("resize", resize);
-      window.removeEventListener("keydown", onInput);
-      window.removeEventListener("pointerdown", onInput);
-      if (audio) { audio.ctx.removeEventListener("statechange", tryStart); audio.close(); }
-      audioRef.current = null;
-    };
-  }, [runId]);
-
-  useEffect(() => {
-    const a = audioRef.current;
-    if (a) a.out.gain.setTargetAtTime(muted ? 0 : 1, a.ctx.currentTime, 0.03);
-  }, [muted]);
-
-  if (done && !preview) return null;
-
-  const replay = () => { setDone(false); setRunId((n) => n + 1); };
-  const font = 'Inter, "SF Pro Display", "Helvetica Neue", "Segoe UI", system-ui, sans-serif';
-
-  return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: preview ? "#040508" : "transparent", overflow: "hidden", fontFamily: font }}>
-      <style>{`
-        .ss-btn{position:absolute;bottom:20px;width:36px;height:36px;display:grid;place-items:center;padding:0;border:0;border-radius:50%;
-          background:transparent;color:#e8f1ff;opacity:.35;cursor:pointer;transition:opacity .25s}
-        .ss-btn:hover,.ss-btn:focus-visible{opacity:1}
-        .ss-btn:focus-visible{outline:1px solid rgba(232,241,255,.6);outline-offset:2px}
-      `}</style>
-      <div key={runId} ref={layerRef} style={{ position: "absolute", inset: 0, background: "#040508", willChange: "opacity, transform" }}>
-        <canvas ref={canvasRef} style={{ position: "absolute", inset: 0, display: "block" }} />
-        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-          <h1
-            ref={titleRef}
-            style={{
-              margin: 0, display: "inline-block", whiteSpace: "nowrap", opacity: 0, lineHeight: 1.1, fontWeight: 300,
-              fontSize: "clamp(30px, 5.6vw, 76px)", color: "#f8fafc",
-              WebkitBackgroundClip: "text", backgroundClip: "text", WebkitTextFillColor: "transparent",
-              backgroundImage: "linear-gradient(#f8fafc,#f8fafc)",
-              filter: "drop-shadow(0 0 10px rgba(232,241,255,.28)) drop-shadow(0 0 34px rgba(59,130,246,.3))",
-              willChange: "transform, opacity, letter-spacing",
-            }}
-          >
-            Console shell
-          </h1>
-        </div>
-        <div ref={hintRef} style={{ position: "absolute", left: 0, right: 0, bottom: 28, textAlign: "center", fontSize: 12, letterSpacing: "0.06em", color: "rgba(232,241,255,.5)", opacity: 0, pointerEvents: "none" }}>
-          Press any key or click to skip
-        </div>
-      </div>
-
-      <button
-        data-ss-ui className="ss-btn" style={{ right: 20 }} onClick={() => setMuted((m) => !m)}
-        aria-label={muted ? "Unmute startup sound" : "Mute startup sound"} aria-pressed={muted}
-      >
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5H4z" />
-          {muted ? <path d="M16 9.5l5 5M21 9.5l-5 5" /> : <path d="M15.5 9a4 4 0 010 6M18 6.5a7.5 7.5 0 010 11" />}
-        </svg>
-      </button>
-
-      {preview && (
-        <button data-ss-ui className="ss-btn" style={{ left: 20, width: "auto", borderRadius: 18, padding: "0 14px", fontSize: 12, letterSpacing: "0.06em", fontFamily: font }} onClick={replay} aria-label="Replay startup animation">
-          Replay
-        </button>
-      )}
-    </div>
-  );
-}
+        g.addColorStop(0, `rgba(${LAV},${0.75 * P})`); g.addColorStop(0.3, `rgba(${PINK},${0.28 * P})`); g.addColorStop(1, `rgba(${PINK},0)`);
+        c.fillStyle = g; c
