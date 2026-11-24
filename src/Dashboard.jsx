@@ -5,8 +5,11 @@ import { useSystem } from './useSystem'
 import Splash from './Splash'
 import Appearance from './Appearance'
 import QuickMenu from './QuickMenu'
+import MusicPanel, { useMedia, SERVICES, MUSIC_ROWS } from './Music'
+import { LockScreen, PinModal, PIN_KEYS, movePinSel } from './Lock'
+import LoadingScreen from './Loading'
 import { KeyboardView, pressKey, moveKey } from './Keyboard'
-import { Tile, TopBar, Widgets, Prompts, Menu, Browser, Confirm, Busy, Toast, VolumePop, TILE, GAP } from './ui'
+import { Tile, TopBar, Widgets, Prompts, Menu, Browser, Confirm, Busy, Toast, VolumePop, Avatar, grad, TILE, GAP } from './ui'
 import { PRESETS, DEFAULT_THEME, applyTheme, shiftHue } from './theme'
 import { sfx } from './sfx'
 
@@ -16,6 +19,9 @@ const SYS = [
 ]
 const SORTS = [['recent', 'Recently played'], ['playtime', 'Most played'], ['name', 'Name']]
 const APPEARANCE_ROWS = 6
+const FRESH_PIN = { purpose: 'unlock', value: '', sel: 4, err: '', shake: 0, lockUntil: 0, busy: false }
+const newPin = (purpose, extra = {}) => ({ type: 'pin', purpose, value: '', sel: 4, err: '', shake: 0, lockUntil: 0, busy: false, ...extra })
+const DEFAULT_PROFILE = { name: 'Player 1', avatar: null, wallpaper: null }
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
 const padLabel = () => {
   const p = [...(navigator.getGamepads?.() || [])].find(Boolean)
@@ -29,9 +35,17 @@ const padIds = () => {
 }
 
 export default function Dashboard() {
-  const [data, setData] = useState(null)       // { config, games, storage, theme }
+  const [boot, setBoot] = useState(null)       // first-frame info: { theme, config, security, profile }
+  const [data, setData] = useState(null)       // { config, games, storage, theme, profile, security }
   const [theme, setTheme] = useState(DEFAULT_THEME)
   const [splash, setSplash] = useState(true)
+  const [skipTok, setSkipTok] = useState(0)
+  const [security, setSecurity] = useState({ pinSet: false, pinLen: 0, prompted: true })
+  const [locked, setLocked] = useState(false)
+  const [lockPin, setLockPin] = useState(FRESH_PIN)
+  const [focusTop, setFocusTop] = useState(false)   // profile chip in the top bar has focus
+  const [launching, setLaunching] = useState(null)  // { g, ready } while the loading screen is up
+  const [musicBusy, setMusicBusy] = useState(null)
   const [idx, setIdx] = useState(0)
   const [modal, setModal] = useState(null)
   const [awake, setAwake] = useState(true)     // button-hint dock visibility
@@ -42,6 +56,10 @@ export default function Dashboard() {
   const [vp, setVp] = useState({ w: window.innerWidth, h: window.innerHeight })
   const sys = useSystem()
   const st = sys.status
+  const music = useMedia()
+  const lockedRef = useRef(false)
+  lockedRef.current = locked
+  const profile = data?.profile || boot?.profile || DEFAULT_PROFILE
 
   const items = useMemo(() => [...(data?.games || []), ...SYS], [data])
   const i = Math.min(idx, items.length - 1)
@@ -73,31 +91,113 @@ export default function Dashboard() {
   const open = (m) => setModal({ ...m, prev: modal })           // open a modal; B returns to the one we came from
 
   useEffect(() => {
-    window.shell.state().then((d) => { setData(d); setTheme({ ...DEFAULT_THEME, ...d.theme }); if (d.config.startupAnimation === false) setSplash(false) })
+    // Fast path: theme + PIN state before the first frame, so the startup animation uses the right colours and the lock can't be skipped.
+    window.shell.boot().then((b) => {
+      setBoot(b)
+      setTheme({ ...DEFAULT_THEME, ...b.theme })
+      setSecurity(b.security)
+      if (b.config.startupAnimation === false) setSplash(false)
+      if (b.security.pinSet) { setLocked(true); setLockPin({ ...FRESH_PIN, lockUntil: Date.now() + (b.security.lockedFor || 0) }) }
+    }).catch(() => setBoot({ theme: DEFAULT_THEME, config: { startupAnimation: false }, security: security, profile: DEFAULT_PROFILE }))
+    window.shell.state().then((d) => { setData(d); if (!dirty.current) setTheme((t) => ({ ...DEFAULT_THEME, ...d.theme })) })
       .catch(() => notify('Could not load your library', 'error'))
-    window.shell.onReturn(() => { setModal(null); sys.refresh() })
+    window.shell.onReturn(() => { setModal((m) => (lockedRef.current ? m : null)); setLaunching(null); setFocusTop(false); sys.refresh(); music.refresh() })
+    window.shell.onGame(({ state }) => {
+      if (state === 'ready') { setLaunching((l) => (l ? { ...l, ready: true } : l)); later('ld', () => setLaunching(null), 900) }
+      else if (state === 'timeout') { setLaunching(null); notify('That is taking longer than expected. It may still be starting.', 'error') }
+    })
     poke()
   }, [])
+  useEffect(() => { if (data?.security) setSecurity(data.security) }, [data])
 
+  // First run, in order: offer a PIN (skippable), then pick the games folder.
   useEffect(() => {
-    if (data && !data.config.setupComplete && !splash && !modal) window.shell.setupDefaults().then((def) => setModal({ type: 'setup', sel: 0, def }))
-  }, [data, splash])
+    if (!data || !boot || splash || modal || locked || launching) return
+    if (!security.prompted && !security.pinSet) { setModal({ type: 'pinoffer', sel: 0 }); return }
+    if (!data.config.setupComplete) window.shell.setupDefaults().then((def) => setModal((m) => m ?? { type: 'setup', sel: 0, def }))
+  }, [data, boot, splash, modal, locked, launching, security])
 
   // ---------- actions ----------
-  const busy = async (fn, text = 'Working…') => {
+  const busy = async (fn, text = 'Working…', after = null) => {     // `after`: modal to come back to (keeps menus open)
     setModal({ type: 'busy', text })
-    try { setData(await fn()) } catch { notify('Something went wrong', 'error') } finally { setModal(null) }
+    try { setData(await fn()) } catch { notify('Something went wrong', 'error') } finally { setModal(after) }
   }
   const setFolder = (dir) => busy(() => window.shell.setFolder(dir), 'Scanning games…')
   const browse = async (base, dir) => { const r = await window.shell.fsList(dir, base.mode); setModal({ type: 'browser', ...base, ...r, sel: 0 }) }
   const openBrowser = async (mode, onPick, title) => browse({ mode, onPick, title, prev: modal }, await window.shell.fsStart(mode))
   const pickArt = (g, kind) => openBrowser('image', (f) => busy(() => window.shell.setArt(g.id, kind, f), 'Saving artwork…'), kind === 'tile' ? 'Choose a tile image' : 'Choose a wallpaper')
   const ask = (name, power, sub) => open({ type: 'confirm', sel: 0, item: { name, power, sub } })
-  const keyboard = (title, onSubmit, mask = false) => open({ type: 'keyboard', title, value: '', mask, show: false, layer: 'abc', r: 1, c: 0, onSubmit })
+  const keyboard = (title, onSubmit, mask = false, initial = '') => open({ type: 'keyboard', title, value: initial, mask, show: false, layer: 'abc', r: 1, c: 0, onSubmit })
 
+  // The loading screen goes up first; the main process tells us when the game's own window is there ('shell:game' ready).
   const launch = async (g) => {
+    if (launching) return
+    setLaunching({ g, ready: false })
     const r = await window.shell.launch(g.id).catch(() => ({ ok: false, error: 'Could not start it' }))
-    if (!r.ok) notify(r.error || 'Could not start it', 'error')
+    if (!r.ok) { setLaunching(null); notify(r.error || 'Could not start it', 'error') }
+  }
+  const cancelLaunch = () => { window.shell.cancelLaunch(); setLaunching(null) }
+
+  // ---------- PIN ----------
+  const pinState = locked ? lockPin : modal?.type === 'pin' ? modal : null
+  const setPinState = (fn) => (locked ? setLockPin(fn) : setModal(fn))
+  const pinFail = (r) => {
+    sfx.error()
+    setPinState((x) => ({ ...x, busy: false, value: '', shake: x.shake + 1,
+      err: r.lockedFor ? '' : `Wrong PIN. ${r.left} ${r.left === 1 ? 'try' : 'tries'} left`, lockUntil: r.lockedFor ? Date.now() + r.lockedFor : 0 }))
+  }
+  const endPinFlow = (m) => setModal(m.prev && m.prev.type !== 'pinoffer' ? m.prev : null)
+  const submitPin = async (value) => {
+    const m = pinState
+    if (!m || m.busy || m.lockUntil > Date.now()) return
+    if (value.length < 4) return setPinState((x) => ({ ...x, err: 'Use 4 to 6 digits' }))
+    if (m.purpose === 'new') return setModal({ ...m, purpose: 'confirm', first: value, value: '', err: '' })
+    if (m.purpose === 'confirm') {
+      if (value !== m.first) { sfx.error(); return setModal({ ...m, purpose: 'new', first: '', value: '', err: 'PINs did not match', shake: m.shake + 1 }) }
+      setPinState((x) => ({ ...x, busy: true }))
+      const r = await window.shell.pinSet(value, m.cur)
+      if (!r.ok) return setModal({ ...m, purpose: 'new', first: '', value: '', err: r.error || 'Could not save the PIN', busy: false })
+      setSecurity(r.security); notify('PIN lock is on'); return endPinFlow(m)
+    }
+    setPinState((x) => ({ ...x, busy: true }))                       // unlock / verify current
+    const r = await window.shell.pinVerify(value)
+    if (!r.ok) return pinFail(r)
+    if (m.purpose === 'unlock') { sfx.ok(); setLocked(false); setLockPin(FRESH_PIN); return }
+    if (m.purpose === 'cur-change') return setModal({ ...newPin('new', { cur: value }), prev: m.prev })
+    const c = await window.shell.pinClear(value)                    // cur-remove
+    if (c.ok) { setSecurity(c.security); notify('PIN removed') } else notify(c.error || 'Could not remove the PIN', 'error')
+    endPinFlow(m)
+  }
+  const pinAdd = (d) => {
+    const m = pinState
+    if (!m || m.busy || m.lockUntil > Date.now() || m.value.length >= 6) return
+    const value = m.value + d
+    setPinState((x) => ({ ...x, value, err: '' }))
+    const target = m.purpose === 'confirm' ? m.first.length : ['unlock', 'cur-change', 'cur-remove'].includes(m.purpose) ? security.pinLen : 0
+    if (target && value.length === target) setTimeout(() => submitPin(value), 120)    // short beat so the last dot fills in
+  }
+  const pinDel = () => setPinState((x) => (x.busy ? x : { ...x, value: x.value.slice(0, -1), err: '' }))
+  const pinPress = () => {
+    const k = PIN_KEYS[pinState.sel]
+    if (k === 'del') pinDel(); else if (k === 'ok') submitPin(pinState.value); else pinAdd(k)
+  }
+  const lockNow = async () => {
+    await window.shell.pinLock()
+    setLockPin(FRESH_PIN); setModal(null); setFocusTop(false); setLocked(true)
+  }
+  // number keys / backspace on a real keyboard (dev) while a PIN screen is up
+  const pinKeys = useRef()
+  pinKeys.current = (e) => { if (!pinState) return; if (/^[0-9]$/.test(e.key)) pinAdd(e.key); else if (e.key === 'Backspace') pinDel() }
+  useEffect(() => { const f = (e) => pinKeys.current(e); window.addEventListener('keydown', f); return () => window.removeEventListener('keydown', f) }, [])
+
+  // ---------- profile / wallpaper / music ----------
+  const pickImage = (kind, back) => openBrowser('image', (f) => busy(() => window.shell.setProfileImage(kind, f), 'Saving…', back), kind === 'avatar' ? 'Choose a profile picture' : 'Choose a wallpaper')
+  const openMusic = async (id) => {
+    setMusicBusy(id)
+    const r = await window.shell.musicOpen(id).catch(() => ({ ok: false, error: 'Could not open it' }))
+    setMusicBusy(null)
+    notify(r.ok ? (r.via === 'web' ? `${r.name} opened in your browser` : `Opening ${r.name}…`) : r.error, r.ok ? 'info' : 'error')
+    setTimeout(music.refresh, 4000); setTimeout(music.refresh, 9000)
   }
   const search = () => keyboard('Search your library', (q) => {
     setModal(null)
@@ -141,6 +241,28 @@ export default function Dashboard() {
   // ---------- menus ----------
   const rowsFor = (m) => {
     switch (m.type) {
+      case 'pinoffer': return [
+        { label: 'Set a PIN', sub: '4 to 6 digits, asked each time ConsoleShell starts', run: () => open(newPin('new')) },
+        { label: 'Skip for now', sub: 'You can set one later in Settings', run: () => { window.shell.pinSkip().then(setSecurity); setModal(null) } },
+      ]
+      case 'pinmenu': return security.pinSet ? [
+        { label: 'Change PIN', run: () => open(newPin('cur-change')) },
+        { label: 'Remove PIN', run: () => open(newPin('cur-remove')) },
+        { label: 'Lock now', sub: 'Ask for the PIN again', run: lockNow },
+        { label: 'Back', run: () => setModal(m.prev ?? null) },
+      ] : [
+        { label: 'Set a PIN', sub: '4 to 6 digits', run: () => open(newPin('new')) },
+        { label: 'Back', run: () => setModal(m.prev ?? null) },
+      ]
+      case 'profile': return [
+        { label: 'Change profile picture', sub: profile.avatar ? 'Replace your current picture' : 'Pick an image from this PC', run: () => pickImage('avatar', m) },
+        ...(profile.avatar ? [{ label: 'Remove profile picture', run: () => busy(() => window.shell.clearProfileImage('avatar'), 'Updating…', m) }] : []),
+        { label: `Name: ${profile.name}`, sub: 'Shown in the top bar', run: () => keyboard('Your name', (v) => (v.trim() ? busy(() => window.shell.setProfileName(v), 'Saving…', m) : setModal(m)), false, profile.name) },
+        { label: 'Set wallpaper', sub: profile.wallpaper ? 'Replace the current background' : 'Pick a background image', run: () => pickImage('wallpaper', m) },
+        ...(profile.wallpaper ? [{ label: 'Remove wallpaper', run: () => busy(() => window.shell.clearProfileImage('wallpaper'), 'Updating…', m) }] : []),
+        { label: `PIN lock: ${security.pinSet ? 'On' : 'Off'}`, sub: security.pinSet ? 'Change, remove or lock now' : 'Protect ConsoleShell with a PIN', run: () => open({ type: 'pinmenu', sel: 0 }) },
+        { label: 'Close', run: () => setModal(m.prev ?? null) },
+      ]
       case 'setup': return [
         ...(m.def ? [{ label: `Use ${m.def}`, sub: 'Found on this PC', run: () => setFolder(m.def) }] : []),
         { label: 'Browse folders…', run: () => openBrowser('folder', setFolder, 'Choose your games folder') },
@@ -151,6 +273,9 @@ export default function Dashboard() {
         const next = SORTS[(SORTS.findIndex((s) => s[0] === sort) + 1) % SORTS.length]
         return [
           { label: 'Appearance', sub: 'Colours, presets, sounds, button hints', run: () => open({ type: 'appearance', sel: 0 }) },
+          { label: 'Profile & wallpaper', sub: 'Picture, name, background image', run: () => open({ type: 'profile', sel: 0 }) },
+          { label: 'Music', sub: 'Spotify, Apple Music and more, in the background', run: () => open({ type: 'music', sel: 0, tsel: 1 }) },
+          { label: `PIN lock: ${security.pinSet ? 'On' : 'Off'}`, sub: security.pinSet ? 'Change, remove or lock now' : 'Ask for a PIN when ConsoleShell starts', run: () => open({ type: 'pinmenu', sel: 0 }) },
           { label: 'Search library', sub: 'Find a game with the on-screen keyboard', run: search },
           { label: `Sort: ${SORTS.find((s) => s[0] === sort)[1]}`, sub: `Select to switch to ${next[1]}`, run: () => busy(() => window.shell.setCfg({ sort: next[0] })) },
           { label: `Steam games: ${data?.config.importSteam ? 'Shown' : 'Hidden'}`, sub: 'Import installed Steam games', run: () => busy(() => window.shell.setCfg({ importSteam: !data?.config.importSteam }), 'Updating…') },
@@ -161,6 +286,7 @@ export default function Dashboard() {
         ]
       }
       case 'power': return [
+        ...(security.pinSet ? [{ label: 'Lock', sub: 'Ask for the PIN again', run: lockNow }] : []),
         { label: 'Sleep', run: () => { window.shell.power('sleep'); setModal(null) } },
         { label: 'Restart', run: () => ask('Restart', 'restart', 'Closes everything and reboots. Unsaved work is lost.') },
         { label: 'Shut down', run: () => ask('Shut down', 'shutdown', 'Force-closes apps and powers off. Unsaved work is lost.') },
@@ -220,16 +346,18 @@ export default function Dashboard() {
   }
 
   // Quick menu
-  const quickIds = ['volume', 'wifi', 'bluetooth', ...(st.brightness?.supported ? ['brightness'] : []), 'shortcuts']
+  const quickIds = ['volume', 'music', 'wifi', 'bluetooth', ...(st.brightness?.supported ? ['brightness'] : []), 'shortcuts']
   const quickAdjust = (dir) => {
     const id = quickIds[modal.sel], d = dir === 'right' ? 1 : -1
     if (id === 'volume') { if (st.volume !== null) sys.setVolume(st.volume + d * 5); else sys.volKey(d > 0 ? 'up' : 'down', 2) }
     if (id === 'brightness') sys.setBrightness(st.brightness.value + d * 5)
+    if (id === 'music' && music.media.active) music.command(d > 0 ? 'next' : 'prev')
     if (id === 'shortcuts') setModal((m) => ({ ...m, sc: clamp((m.sc ?? 0) + d, 0, 2) }))
   }
   const quickConfirm = () => {
     const id = quickIds[modal.sel]
     if (id === 'volume') { if (st.volume !== null) sys.toggleMute(); else sys.volKey('mute') }
+    if (id === 'music') { if (music.media.active) music.command('toggle'); else open({ type: 'music', sel: 1, tsel: 1 }) }
     if (id === 'wifi') openWifi()
     if (id === 'bluetooth') openBt()
     if (id === 'shortcuts') {
@@ -249,14 +377,24 @@ export default function Dashboard() {
   const { connected } = useGamepadNav({
     onMove: (dir) => {
       poke()
-      if (splash || modal?.type === 'busy') return
+      if (splash || modal?.type === 'busy' || launching) return
+      if (pinState) { sfx.move(); return setPinState((x) => ({ ...x, sel: movePinSel(x.sel, dir) })) }
       sfx.move()
-      if (!modal) return setIdx((x) => clamp(x + (dir === 'right' ? 1 : dir === 'left' ? -1 : 0), 0, items.length - 1))
+      if (!modal) {
+        if (focusTop) { if (dir === 'down') setFocusTop(false); return }       // profile chip: Down returns to the tiles
+        if (dir === 'up') return setFocusTop(true)
+        return setIdx((x) => clamp(x + (dir === 'right' ? 1 : dir === 'left' ? -1 : 0), 0, items.length - 1))
+      }
       if (modal.type === 'confirm') return setModal((m) => ({ ...m, sel: dir === 'left' ? 0 : dir === 'right' ? 1 : m.sel }))
       if (modal.type === 'keyboard') return setModal((m) => moveKey(m, dir))
       if (modal.type === 'appearance') {
         if (dir === 'up' || dir === 'down') return setModal((m) => ({ ...m, sel: clamp(m.sel + (dir === 'down' ? 1 : -1), 0, APPEARANCE_ROWS - 1) }))
         return adjust(modal.sel, dir)
+      }
+      if (modal.type === 'music') {
+        if (dir === 'up' || dir === 'down') return setModal((m) => ({ ...m, sel: clamp(m.sel + (dir === 'down' ? 1 : -1), 0, MUSIC_ROWS - 1) }))
+        if (modal.sel === 0) setModal((m) => ({ ...m, tsel: clamp(m.tsel + (dir === 'right' ? 1 : dir === 'left' ? -1 : 0), 0, 2) }))
+        return
       }
       if (modal.type === 'quick') {
         if (dir === 'up' || dir === 'down') return setModal((m) => ({ ...m, sel: clamp(m.sel + (dir === 'down' ? 1 : -1), 0, quickIds.length - 1) }))
@@ -266,13 +404,19 @@ export default function Dashboard() {
     },
     onConfirm: () => {
       poke()
-      if (splash) return setSplash(false)
+      if (splash) return setSkipTok((t) => t + 1)
+      if (launching) return
+      if (pinState) { sfx.ok(); return pinPress() }
       sfx.ok()
-      if (!modal) return activate(item)
+      if (!modal) return focusTop ? setModal({ type: 'profile', sel: 0 }) : activate(item)
       switch (modal.type) {
         case 'busy': return
         case 'confirm': if (modal.sel === 1) window.shell.power(modal.item.power); return setModal(modal.sel === 1 ? null : modal.prev ?? null)
         case 'appearance': return modal.sel === 5 ? setModal(modal.prev ?? null) : adjust(modal.sel, 'right')
+        case 'music':
+          if (modal.sel === 0) return music.command(['prev', 'toggle', 'next'][modal.tsel])
+          if (modal.sel === MUSIC_ROWS - 1) return setModal(modal.prev ?? null)
+          return openMusic(SERVICES[modal.sel - 1].id)
         case 'quick': return quickConfirm()
         case 'keyboard': { const r = pressKey(modal); return r.submit ? submitKeyboard() : setModal(r.m) }
         default: rows[Math.min(modal.sel, rows.length - 1)]?.run?.()
@@ -280,61 +424,80 @@ export default function Dashboard() {
     },
     onBack: () => {
       poke()
-      if (splash) return setSplash(false)
-      if (!modal || modal.type === 'busy' || modal.type === 'setup') return
+      if (splash) return setSkipTok((t) => t + 1)
+      if (launching) return cancelLaunch()
+      if (pinState) { sfx.back(); if (locked) return pinDel(); if (!pinState.value) return setModal(modal.prev ?? null); return pinDel() }
+      if (!modal) return focusTop ? setFocusTop(false) : undefined
+      if (modal.type === 'busy' || modal.type === 'setup' || modal.type === 'pinoffer') return
       sfx.back()
       setModal(modal.prev ?? null)
     },
     onX: () => {
       poke()
-      if (splash) return
+      if (splash || launching) return
+      if (pinState) return pinDel()
       if (modal?.type === 'keyboard') return setModal((m) => ({ ...m, value: m.value.slice(0, -1) }))
       if (!modal) open({ type: 'appearance', sel: 0 })
     },
     onY: () => {
       poke()
-      if (splash) return
+      if (splash || locked || launching) return
       if (modal?.type === 'keyboard') return setModal((m) => ({ ...m, value: m.value + ' ' }))
-      if (!modal && isGame) open({ type: 'art', sel: 0, game: item })
+      if (!modal && isGame && !focusTop) open({ type: 'art', sel: 0, game: item })
     },
     onStart: () => {
       poke()
-      if (splash) return
+      if (splash || launching) return
+      if (pinState) return submitPin(pinState.value)
       if (modal?.type === 'keyboard') return submitKeyboard()
       if (!modal) open({ type: 'settings', sel: 0 })
     },
     onQuick: () => {
       poke()
-      if (splash || modal?.type === 'busy') return
+      if (splash || locked || launching || modal?.type === 'busy' || modal?.type === 'pin') return
       sfx.ok()
       if (modal?.type === 'quick') return setModal(null)
-      sys.refresh(); sys.refreshPad()
+      sys.refresh(); sys.refreshPad(); music.refresh()
       setModal({ type: 'quick', sel: 0, sc: 0, prev: null })
     },
     onBumper: (d) => {
       poke()
-      if (splash || modal) return
+      if (splash || locked || launching || modal) return
       if (st.volume === null) return sys.volKey(d > 0 ? 'up' : 'down', 2)     // can't read the level: use the media keys
       sys.setVolume(st.volume + d * 5); sfx.move(); flashVol()
     },
   })
 
+  const pinProps = (m) => {
+    const pu = m.purpose
+    const title = { unlock: 'Enter your PIN', new: 'Set a PIN', confirm: 'Confirm your PIN', 'cur-change': 'Enter current PIN', 'cur-remove': 'Enter current PIN' }[pu]
+    const sub = { unlock: '', new: 'Choose 4 to 6 digits, then press ✓', confirm: 'Enter it once more', 'cur-change': 'Then you can choose a new one', 'cur-remove': 'To turn the PIN lock off' }[pu]
+    const dots = pu === 'new' ? 4 : pu === 'confirm' ? m.first.length : security.pinLen || 4
+    return { title, sub, value: m.value, dots, sel: m.sel, error: m.err, lockUntil: m.lockUntil, shake: m.shake,
+      hint: pu === 'unlock' ? undefined : 'D-pad choose  ·  A press  ·  B back  ·  Menu confirm' }
+  }
+
   const folder = data?.config.gamesFolders[0]
   const modalEl = !modal ? null
-    : modal.type === 'quick' ? <QuickMenu key="q" status={st} rows={quickIds} sel={modal.sel} sc={modal.sc ?? 0} padName={padLabel()} padIds={padIds()} pad={sys.pad} />
+    : modal.type === 'quick' ? <QuickMenu key="q" media={music.media} status={st} rows={quickIds} sel={modal.sel} sc={modal.sc ?? 0} padName={padLabel()} padIds={padIds()} pad={sys.pad} />
     : modal.type === 'appearance' ? <Appearance key="ap" theme={theme} sel={modal.sel} />
+    : modal.type === 'music' ? <MusicPanel key="mu" media={music.media} sel={modal.sel} tsel={modal.tsel} busyId={musicBusy} />
+    : modal.type === 'pin' ? <PinModal key="pin" {...pinProps(modal)} />
     : modal.type === 'keyboard' ? <KeyboardView key="kb" m={modal} />
     : modal.type === 'confirm' ? <Confirm key="c" item={modal.item} sel={modal.sel} />
     : modal.type === 'busy' ? <Busy key="b" text={modal.text} />
     : modal.type === 'browser' ? <Browser key="br" title={modal.title} dir={modal.dir} rows={rows} sel={modal.sel} />
     : <Menu key={modal.type} rows={rows} sel={modal.sel}
-        title={{ setup: 'Welcome', settings: 'Settings', power: 'Power', art: modal.game?.name, wifi: 'Wi-Fi', bt: 'Bluetooth' }[modal.type]}
-        sub={{ setup: 'Pick the folder that holds your games. ConsoleShell scans it for .exe files and remembers your choice.', art: `ID for overrides.json: ${modal.game?.id}` }[modal.type]} />
+        header={modal.type === 'profile' ? <div className="mb-5"><div className="inline-block rounded-full p-[3px]" style={{ background: grad(135) }}><Avatar profile={profile} size={84} /></div></div> : null}
+        title={{ setup: 'Welcome', settings: 'Settings', power: 'Power', art: modal.game?.name, wifi: 'Wi-Fi', bt: 'Bluetooth', profile: 'Profile', pinmenu: 'PIN lock', pinoffer: 'Protect with a PIN?' }[modal.type]}
+        sub={{ setup: 'Pick the folder that holds your games. ConsoleShell scans it for .exe files and remembers your choice.', pinoffer: 'Keep others out of your library. It only takes a moment, and you can skip it.', art: `ID for overrides.json: ${modal.game?.id}` }[modal.type]} />
 
   return (
     <div className="h-full w-full overflow-hidden bg-charcoal">
     <div className="relative overflow-hidden text-white" style={{ width: vp.w / scale, height: vp.h / scale, transform: `scale(${scale})`, transformOrigin: '0 0' }}>
       {/* ambient theme glow (plain gradients: no blur filters, cheap on 4K) + fine vertical grain */}
+      {/* your own wallpaper sits at the very back, dimmed so tiles stay readable */}
+      {profile.wallpaper && <><div className="absolute inset-0" style={{ background: `url("${profile.wallpaper}") center/cover` }} /><div className="absolute inset-0 bg-charcoal/50" /></>}
       <div className="absolute inset-0" style={{ background: 'radial-gradient(55% 62% at 90% -5%, rgb(var(--p) / .40), transparent 70%), radial-gradient(50% 58% at -3% 105%, rgb(var(--s) / .30), transparent 70%)' }} />
       <div className="absolute inset-0 opacity-[0.045]" style={{ background: 'repeating-linear-gradient(90deg,#fff 0 1px,transparent 1px 72px)' }} />
 
@@ -348,7 +511,7 @@ export default function Dashboard() {
       </AnimatePresence>
       <div className="absolute inset-0 bg-gradient-to-t from-charcoal via-charcoal/30 to-charcoal/60" />
 
-      <TopBar status={st} padConnected={connected} pad={sys.pad} />
+      <TopBar status={st} padConnected={connected} pad={sys.pad} profile={profile} topFocused={focusTop && !modal && !launching} media={music.media} pinSet={security.pinSet} />
 
       <motion.div className="absolute flex items-start" style={{ top: 190, gap: GAP, willChange: 'transform' }}
         animate={{ x: 110 - i * (TILE + GAP) }} transition={{ type: 'spring', stiffness: 260, damping: 32 }}>
@@ -356,12 +519,16 @@ export default function Dashboard() {
       </motion.div>
 
       <Widgets games={data?.games.filter((g) => g.id !== 'steam').length ?? 0} folder={folder} storage={data?.storage} connected={connected} />
-      <Prompts mode={splash ? null : modal ? (modal.type === 'keyboard' ? 'keyboard' : 'modal') : 'home'} canArt={isGame} show={awake || theme.hints === 'always'} />
+      <Prompts mode={splash || locked || launching ? null : modal ? (modal.type === 'keyboard' ? 'keyboard' : 'modal') : 'home'} canArt={isGame} show={awake || theme.hints === 'always'} />
       <VolumePop show={volShow} volume={st.volume} muted={st.muted} />
       <Toast t={toast} />
 
       <AnimatePresence mode="wait">{modalEl}</AnimatePresence>
-      <AnimatePresence>{splash && <Splash sound={data?.config.startupSound !== false} onDone={() => setSplash(false)} />}</AnimatePresence>
+      <AnimatePresence>{launching && <LoadingScreen key="ld" g={launching.g} ready={launching.ready} wallpaper={profile.wallpaper} />}</AnimatePresence>
+      {locked && <LockScreen profile={profile} {...pinProps(lockPin)} />}
+      {/* nothing from the library shows before the theme has loaded; the Splash starts as soon as it has */}
+      {!boot && <div className="absolute inset-0 z-[80] bg-charcoal" />}
+      {splash && boot && <Splash theme={boot.theme} sound={boot.config.startupSound !== false} skipToken={skipTok} onDone={() => setSplash(false)} />}
     </div>
     </div>
   )
