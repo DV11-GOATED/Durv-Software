@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, protocol, net } = require('electron')
+const { app, BrowserWindow, ipcMain, shell, protocol, net, nativeImage } = require('electron')
 const { exec, execFile, spawn } = require('child_process')
 const path = require('path')
 const fs = require('fs')
@@ -6,6 +6,7 @@ const fsp = fs.promises
 const crypto = require('crypto')
 const { pathToFileURL } = require('url')
 const sys = require('./lib/sys')
+const security = require('./lib/security')
 const { steamGames } = require('./lib/steam')
 
 // Same data folder in dev and packaged builds: %APPDATA%\ConsoleShell
@@ -33,6 +34,7 @@ const P = {
   apps: () => path.join(dataDir(), 'apps.json'),
   theme: () => path.join(dataDir(), 'theme.json'),
   stats: () => path.join(dataDir(), 'stats.json'),
+  profile: () => path.join(dataDir(), 'profile.json'),
   art: () => path.join(dataDir(), 'art'),
 }
 const J = {
@@ -51,6 +53,8 @@ const DEFAULT_CONFIG = {
   ignore: ['unins', 'setup', 'redist', 'vcredist', 'vc_redist', 'dxsetup', 'crash', 'dotnet', 'installer', 'updater', 'helper', 'easyanticheat', 'battleye'],
 }
 const DEFAULT_THEME = { preset: 'nebula', primary: '#8b5cff', secondary: '#ff4fb8', hints: 'auto', sounds: true }
+const DEFAULT_PROFILE = { name: 'Player 1', avatar: null, wallpaper: null }
+const loadProfile = () => ({ ...DEFAULT_PROFILE, ...J.read(P.profile(), {}) })
 const loadCfg = () => ({ ...DEFAULT_CONFIG, ...J.read(P.cfg(), {}) })
 const loadTheme = () => ({ ...DEFAULT_THEME, ...J.read(P.theme(), {}) })
 const IMG = /\.(png|jpe?g|webp|gif|bmp)$/i
@@ -152,6 +156,7 @@ const PS_ICON = [
 ].join('\r\n')
 
 const artUrl = (v) => (v ? 'art://local/' + encodeURIComponent(v) : null)
+const profileOut = () => { const p = loadProfile(); return { name: p.name, avatar: artUrl(p.avatar), wallpaper: artUrl(p.wallpaper) } }
 
 async function iconFor(exe) {
   const name = `icon-${hid(exe)}.png`
@@ -217,7 +222,7 @@ function storage(cfg) {
 
 async function pack() {
   const config = loadCfg()
-  return { config, games: await buildLibrary(), storage: storage(config), theme: loadTheme() }
+  return { config, games: await buildLibrary(), storage: storage(config), theme: loadTheme(), profile: profileOut(), security: security.status() }
 }
 
 // ---------- window ----------
@@ -246,6 +251,15 @@ function reclaim() {
   setTimeout(() => win && win.setAlwaysOnTop(false), 600)
   win.webContents.send('shell:returned')
   sys.status().catch(() => {})
+}
+
+// Same as reclaim() but silent: used after we start a music app so its window doesn't keep the shell hidden.
+function bringBack() {
+  if (!win) return
+  if (win.isMinimized()) win.restore()
+  win.setAlwaysOnTop(true); win.show(); win.focus()
+  if (!isDev) win.setFullScreen(true)
+  setTimeout(() => win && win.setAlwaysOnTop(false), 600)
 }
 
 // Is a URL scheme (e.g. com.epicgames.launcher) actually registered in Windows?
@@ -278,6 +292,37 @@ function watch(isRunning, onEnd, graceSec = 90) {
 const stat = {
   launch(id) { const s = J.read(P.stats(), {}); s[id] = { ...(s[id] || {}), last: Date.now(), count: ((s[id] || {}).count || 0) + 1 }; J.write(P.stats(), s) },
   play(id, sec) { const s = J.read(P.stats(), {}); s[id] = { ...(s[id] || {}), sec: ((s[id] || {}).sec || 0) + Math.round(sec) }; J.write(P.stats(), s) },
+}
+
+// ---------- launch screen: keep the shell up until the game's window is really there ----------
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+let launchToken = null
+let lastLaunchAt = 0
+const sendGame = (state) => { if (win && !win.isDestroyed()) win.webContents.send('shell:game', { state }) }
+
+// Resolves to 'ready' | 'timeout' | 'cancelled'. Never throws.
+async function waitForGame(g, proc, token, isRunning) {
+  const t0 = Date.now()
+  const limit = g.type === 'steam' || g.type === 'epic' ? 120000 : 60000
+  const needsRunning = g.type === 'steam' && g.appid          // Steam pops its own windows first: wait until the game itself is up
+  let fgHits = 0, helperErrors = 0
+  while (!token.cancelled && Date.now() - t0 < limit) {
+    await sleep(700)
+    if (token.cancelled) break
+    let st = null
+    try { st = await sys.windowState(proc || null); helperErrors = 0 } catch { helperErrors += 1 }
+    if (!st) {                                                  // no helper (not Windows / PowerShell blocked): old behaviour, a short fixed wait
+      if (helperErrors >= 3 && Date.now() - t0 > 3500) return 'ready'
+      continue
+    }
+    const otherFg = st.fgPid > 0 && st.fgPid !== process.pid
+    let up = false
+    if (needsRunning) up = (await isRunning().catch(() => false)) && otherFg
+    else if (proc) up = !!st.visible
+    else { fgHits = otherFg ? fgHits + 1 : 0; up = fgHits >= 2 && Date.now() - t0 > 1500 }
+    if (up) { await sleep(700); return token.cancelled ? 'cancelled' : 'ready' }    // let it finish switching to fullscreen
+  }
+  return token.cancelled ? 'cancelled' : 'timeout'
 }
 
 // ---------- IPC ----------
@@ -377,6 +422,91 @@ ipcMain.handle('theme:set', (_e, t) => {
   return true
 })
 
+// Everything the UI needs before the first frame: theme (for the startup animation), PIN state, profile.
+ipcMain.handle('boot:get', () => {
+  const cfg = loadCfg()
+  return {
+    theme: loadTheme(),
+    config: { startupAnimation: cfg.startupAnimation, startupSound: cfg.startupSound, setupComplete: cfg.setupComplete },
+    security: security.status(),
+    profile: profileOut(),
+  }
+})
+
+// ----- PIN lock -----
+ipcMain.handle('pin:status', () => security.status())
+ipcMain.handle('pin:verify', (_e, pin) => security.verify(pin))
+ipcMain.handle('pin:set', (_e, pin, current) => ({ ...security.set(pin, current), security: security.status() }))
+ipcMain.handle('pin:clear', (_e, current) => ({ ...security.clear(current), security: security.status() }))
+ipcMain.handle('pin:skip', () => { security.skipPrompt(); return security.status() })
+ipcMain.handle('pin:lock', () => { security.lock(); return security.status() })
+
+// ----- profile: picture, name, wallpaper -----
+const dropOldArt = (name) => { if (name && !path.isAbsolute(name)) fsp.unlink(path.join(P.art(), path.basename(name))).catch(() => {}) }
+ipcMain.handle('profile:setImage', async (_e, kind, src) => {
+  if (!['avatar', 'wallpaper'].includes(kind) || typeof src !== 'string' || !IMG.test(src) || !fs.existsSync(src)) return pack()
+  const prof = loadProfile()
+  const stamp = Date.now()
+  let name = `profile-${kind}-${stamp}${path.extname(src).toLowerCase()}`
+  let done = false
+  if (kind === 'avatar') {                                      // centre-crop to a square and shrink: keeps the top bar light
+    try {
+      const img = nativeImage.createFromPath(src)
+      const { width, height } = img.getSize()
+      if (width && height) {
+        const side = Math.min(width, height)
+        const sq = img.crop({ x: Math.floor((width - side) / 2), y: Math.floor((height - side) / 2), width: side, height: side })
+        name = `profile-avatar-${stamp}.png`
+        await fsp.writeFile(path.join(P.art(), name), (side > 384 ? sq.resize({ width: 384, height: 384, quality: 'best' }) : sq).toPNG())
+        done = true
+      }
+    } catch {}
+  }
+  if (!done) await fsp.copyFile(src, path.join(P.art(), name))   // formats nativeImage can't read (webp, gif) are copied as they are
+  dropOldArt(prof[kind])
+  prof[kind] = name
+  J.write(P.profile(), prof)
+  return pack()
+})
+ipcMain.handle('profile:clear', async (_e, kind) => {
+  if (!['avatar', 'wallpaper'].includes(kind)) return pack()
+  const prof = loadProfile()
+  dropOldArt(prof[kind]); prof[kind] = null
+  J.write(P.profile(), prof)
+  return pack()
+})
+ipcMain.handle('profile:setName', async (_e, name) => {
+  const clean = String(name || '').replace(/[\u0000-\u001f]/g, '').trim().slice(0, 16)
+  if (clean) J.write(P.profile(), { ...loadProfile(), name: clean })
+  return pack()
+})
+
+// ----- music: control whatever is playing + start a streaming app in the background -----
+const MUSIC = {
+  spotify: { name: 'Spotify', app: 'Spotify', scheme: 'spotify', web: 'https://open.spotify.com' },
+  apple: { name: 'Apple Music', app: 'Apple Music', scheme: 'music', web: 'https://music.apple.com' },
+  ytmusic: { name: 'YouTube Music', app: null, scheme: null, web: 'https://music.youtube.com' },
+}
+ipcMain.handle('media:get', () => sys.media().catch(() => ({ active: false })))
+ipcMain.handle('media:cmd', (_e, action) => sys.mediaCmd(action).catch(() => ({ active: false })))
+ipcMain.handle('music:open', async (_e, id) => {
+  const m = MUSIC[id]
+  if (!m) return { ok: false, error: 'Unknown service' }
+  const openedAt = Date.now()
+  let via = null
+  try {
+    const found = m.app ? await sys.findApp(m.app).catch(() => null) : null
+    if (found && found.id) { spawn('explorer.exe', [`shell:AppsFolder\\${found.id}`], { detached: true, stdio: 'ignore' }).unref(); via = 'app' }
+    else if (m.scheme && await protocolRegistered(m.scheme)) { shell.openExternal(`${m.scheme}:`); via = 'protocol' }
+    else { shell.openExternal(m.web); via = 'web' }
+  } catch { return { ok: false, error: `Could not open ${m.name}` } }
+  // These apps grab the screen when they start. Take it back, unless a game was launched in the meantime.
+  for (const ms of [2500, 6000]) setTimeout(() => { if (lastLaunchAt < openedAt) bringBack() }, ms)
+  return { ok: true, via, name: m.name }
+})
+
+ipcMain.handle('launch:cancel', () => { if (launchToken) launchToken.cancelled = true; return true })
+
 ipcMain.handle('sys:openConfig', () => shell.openPath(dataDir()))
 ipcMain.handle('sys:openSettings', (_e, page) => {
   const url = { bluetooth: 'ms-settings:bluetooth', wifi: 'ms-settings:network-wifi', sound: 'ms-settings:sound' }[page]
@@ -394,6 +524,7 @@ ipcMain.handle('sys:wifiScan', () => sys.wifiScan())
 ipcMain.handle('sys:wifiConnect', (_e, ssid, pw, auth) => sys.wifiConnect(ssid, pw, auth))
 
 ipcMain.handle('app:launch', async (_e, id) => {
+  if (!security.isUnlocked()) return { ok: false, error: 'Locked' }
   const g = library.find((a) => a.id === id)
   if (!g) return { ok: false, error: 'Unknown app' }
   const isExe = /\.exe$/i.test(g.target || '')
@@ -421,7 +552,15 @@ ipcMain.handle('app:launch', async (_e, id) => {
 
   stat.launch(g.id)
   if (isRunning) watch(isRunning, (seenAt) => { if (seenAt) stat.play(g.id, (Date.now() - seenAt) / 1000); reclaim() })
-  setTimeout(() => win && win.minimize(), 400)
+  // Keep the shell (and its loading screen) on screen until the game's own window shows up, then step aside.
+  if (launchToken) launchToken.cancelled = true
+  const token = (launchToken = { cancelled: false })
+  lastLaunchAt = Date.now()
+  waitForGame(g, proc, token, isRunning || (async () => false)).then((r) => {
+    if (launchToken === token) launchToken = null
+    if (r === 'ready') { sendGame('ready'); setTimeout(() => win && win.minimize(), 600) }
+    else if (r === 'timeout') sendGame('timeout')
+  })
   return { ok: true }
 })
 
@@ -440,6 +579,7 @@ else {
   app.whenReady().then(() => {
     ensureFiles()
     sys.init(dataDir())
+    security.init(dataDir())
     sys.status().catch(() => {})     // warm up the helper so the first menu open is instant
     protocol.handle('art', (req) => {
       const v = decodeURIComponent(new URL(req.url).pathname.slice(1))
