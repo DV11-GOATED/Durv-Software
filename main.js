@@ -9,9 +9,9 @@ const sys = require('./lib/sys')
 const security = require('./lib/security')
 const { steamGames } = require('./lib/steam')
 
-// Same data folder in dev and packaged builds: %APPDATA%\ConsoleShell
-app.setName('ConsoleShell')
-app.setPath('userData', path.join(app.getPath('appData'), 'ConsoleShell'))
+// Same data folder in dev and packaged builds: %APPDATA%\Durv Software
+app.setName('Durv Software')
+app.setPath('userData', path.join(app.getPath('appData'), 'Durv Software'))
 protocol.registerSchemesAsPrivileged([{ scheme: 'art', privileges: { standard: true, secure: true, supportFetchAPI: true } }])
 
 // Smoother rendering on big / 4K screens
@@ -227,7 +227,10 @@ async function pack() {
 
 // ---------- window ----------
 function createWindow() {
+  const appIcon = path.join(__dirname, 'build', 'Durv Software_cover.ico')
   win = new BrowserWindow({
+    title: 'Durv Software',
+    icon: fs.existsSync(appIcon) ? appIcon : undefined,
     fullscreen: true, kiosk: !isDev, width: 1280, height: 720, frame: false,
     backgroundColor: '#0a0a12', show: false,
     webPreferences: {
