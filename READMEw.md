@@ -1,4 +1,4 @@
-# ConsoleShell
+# Durv Software
 
 A controller-first, console-style launcher / shell for Windows (Electron + React + Tailwind + Framer Motion).
 
