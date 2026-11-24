@@ -242,7 +242,7 @@ export default function Dashboard() {
   const rowsFor = (m) => {
     switch (m.type) {
       case 'pinoffer': return [
-        { label: 'Set a PIN', sub: '4 to 6 digits, asked each time ConsoleShell starts', run: () => open(newPin('new')) },
+        { label: 'Set a PIN', sub: '4 to 6 digits, asked each time Durv Software starts', run: () => open(newPin('new')) },
         { label: 'Skip for now', sub: 'You can set one later in Settings', run: () => { window.shell.pinSkip().then(setSecurity); setModal(null) } },
       ]
       case 'pinmenu': return security.pinSet ? [
@@ -260,7 +260,7 @@ export default function Dashboard() {
         { label: `Name: ${profile.name}`, sub: 'Shown in the top bar', run: () => keyboard('Your name', (v) => (v.trim() ? busy(() => window.shell.setProfileName(v), 'Saving…', m) : setModal(m)), false, profile.name) },
         { label: 'Set wallpaper', sub: profile.wallpaper ? 'Replace the current background' : 'Pick a background image', run: () => pickImage('wallpaper', m) },
         ...(profile.wallpaper ? [{ label: 'Remove wallpaper', run: () => busy(() => window.shell.clearProfileImage('wallpaper'), 'Updating…', m) }] : []),
-        { label: `PIN lock: ${security.pinSet ? 'On' : 'Off'}`, sub: security.pinSet ? 'Change, remove or lock now' : 'Protect ConsoleShell with a PIN', run: () => open({ type: 'pinmenu', sel: 0 }) },
+        { label: `PIN lock: ${security.pinSet ? 'On' : 'Off'}`, sub: security.pinSet ? 'Change, remove or lock now' : 'Protect Durv Software with a PIN', run: () => open({ type: 'pinmenu', sel: 0 }) },
         { label: 'Close', run: () => setModal(m.prev ?? null) },
       ]
       case 'setup': return [
@@ -275,7 +275,7 @@ export default function Dashboard() {
           { label: 'Appearance', sub: 'Colours, presets, sounds, button hints', run: () => open({ type: 'appearance', sel: 0 }) },
           { label: 'Profile & wallpaper', sub: 'Picture, name, background image', run: () => open({ type: 'profile', sel: 0 }) },
           { label: 'Music', sub: 'Spotify, Apple Music and more, in the background', run: () => open({ type: 'music', sel: 0, tsel: 1 }) },
-          { label: `PIN lock: ${security.pinSet ? 'On' : 'Off'}`, sub: security.pinSet ? 'Change, remove or lock now' : 'Ask for a PIN when ConsoleShell starts', run: () => open({ type: 'pinmenu', sel: 0 }) },
+          { label: `PIN lock: ${security.pinSet ? 'On' : 'Off'}`, sub: security.pinSet ? 'Change, remove or lock now' : 'Ask for a PIN when Durv Software starts', run: () => open({ type: 'pinmenu', sel: 0 }) },
           { label: 'Search library', sub: 'Find a game with the on-screen keyboard', run: search },
           { label: `Sort: ${SORTS.find((s) => s[0] === sort)[1]}`, sub: `Select to switch to ${next[1]}`, run: () => busy(() => window.shell.setCfg({ sort: next[0] })) },
           { label: `Steam games: ${data?.config.importSteam ? 'Shown' : 'Hidden'}`, sub: 'Import installed Steam games', run: () => busy(() => window.shell.setCfg({ importSteam: !data?.config.importSteam }), 'Updating…') },
@@ -291,7 +291,7 @@ export default function Dashboard() {
         { label: 'Restart', run: () => ask('Restart', 'restart', 'Closes everything and reboots. Unsaved work is lost.') },
         { label: 'Shut down', run: () => ask('Shut down', 'shutdown', 'Force-closes apps and powers off. Unsaved work is lost.') },
         { label: 'Desktop', sub: 'Exit to Windows', run: () => { window.shell.power('desktop'); setModal(null) } },
-        { label: 'Close ConsoleShell', sub: 'Quit this app', run: () => window.shell.power('quit') },
+        { label: 'Close Durv Software', sub: 'Quit this app', run: () => window.shell.power('quit') },
         { label: 'Cancel', run: () => setModal(m.prev ?? null) },
       ]
       case 'art': return [
@@ -490,7 +490,7 @@ export default function Dashboard() {
     : <Menu key={modal.type} rows={rows} sel={modal.sel}
         header={modal.type === 'profile' ? <div className="mb-5"><div className="inline-block rounded-full p-[3px]" style={{ background: grad(135) }}><Avatar profile={profile} size={84} /></div></div> : null}
         title={{ setup: 'Welcome', settings: 'Settings', power: 'Power', art: modal.game?.name, wifi: 'Wi-Fi', bt: 'Bluetooth', profile: 'Profile', pinmenu: 'PIN lock', pinoffer: 'Protect with a PIN?' }[modal.type]}
-        sub={{ setup: 'Pick the folder that holds your games. ConsoleShell scans it for .exe files and remembers your choice.', pinoffer: 'Keep others out of your library. It only takes a moment, and you can skip it.', art: `ID for overrides.json: ${modal.game?.id}` }[modal.type]} />
+        sub={{ setup: 'Pick the folder that holds your games. Durv Software scans it for .exe files and remembers your choice.', pinoffer: 'Keep others out of your library. It only takes a moment, and you can skip it.', art: `ID for overrides.json: ${modal.game?.id}` }[modal.type]} />
 
   return (
     <div className="h-full w-full overflow-hidden bg-charcoal">
