@@ -111,3 +111,5 @@ Types: `exe`, `steam`, `url`, `cmd`, `uwp`. Find a UWP id with PowerShell: `Get-
    Undo: `reg delete "HKCU\Software\Microsoft\Windows NT\CurrentVersion\Winlogon" /v Shell /f`
    (From a broken state: Ctrl+Alt+Del > Task Manager > Run new task > `cmd`, or sign in with another admin account.)
    The Power menu's **Desktop** entry starts Explorer. Try step 2 first and keep a second admin account.
+
+https://github.com/electron/electron/releases/download/v32.3.3/electron-v32.3.3-win32-x64.zip
