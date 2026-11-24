@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { WifiIcon, BtIcon, VolIcon, PadIcon, StarIcon } from './icons'
+import { WifiIcon, BtIcon, VolIcon, PadIcon, StarIcon, MusicIcon, LockIcon } from './icons'
 
 export const TILE = 172, TILE_FOCUS = 288, GAP = 24
 const SPRING = { type: 'spring', stiffness: 340, damping: 32 }
@@ -28,26 +28,34 @@ const Svg = ({ children }) => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="absolute left-1/2 top-1/2 h-[36%] w-[36%] -translate-x-1/2 -translate-y-1/2 text-white/85">{children}</svg>
 )
 
-export function Tile({ g, focused }) {
-  const size = focused ? TILE_FOCUS : TILE
+// The tile artwork on its own (used by the row and by the launch screen).
+export function TileFace({ g, size, radius = 28 }) {
   const sys = g.kind === 'settings' || g.kind === 'power'
   const ang = angleOf(g.id)
   const bg = g.tile ? `url("${g.tile}") center/cover`
     : sys ? 'linear-gradient(150deg,#2b2c3a,#14151d)'
     : g.accent ? `linear-gradient(${ang}deg, ${g.accent}e6, ${g.accent}40 58%, #0d0e18)`
     : `linear-gradient(${ang}deg, ${a('p', 0.92)} 0%, ${a('s', 0.55)} 58%, #0d0e18 100%)`
+  return (
+    <div className="absolute inset-0 overflow-hidden" style={{ borderRadius: radius, background: bg, boxShadow: '0 10px 24px rgba(0,0,0,.45)' }}>
+      {g.kind === 'settings' && <Svg><path d="M4 7h10M18 7h2M4 17h2M10 17h10" /><circle cx="16" cy="7" r="2" /><circle cx="8" cy="17" r="2" /></Svg>}
+      {g.kind === 'power' && <Svg><path d="M12 3v9" /><path d="M6.4 6.4a8 8 0 1 0 11.2 0" /></Svg>}
+      {!sys && !g.tile && (g.icon ? (<>
+        <img src={g.icon} alt="" className="absolute left-1/2 top-1/2 h-[60%] w-[60%] -translate-x-1/2 -translate-y-1/2 object-contain drop-shadow-[0_10px_20px_rgba(0,0,0,.55)]" />
+      </>) : <span className="absolute inset-0 grid place-items-center font-semibold text-white/85" style={{ fontSize: size * 0.4 }}>{g.name[0]}</span>)}
+      {g.fav && <div className="absolute right-3 top-3 grid h-8 w-8 place-items-center rounded-full bg-black/40 text-white"><StarIcon size={16} /></div>}
+      <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-white/[0.22] via-transparent to-black/30 ring-1 ring-inset ring-white/20" style={{ borderRadius: radius }} />
+    </div>
+  )
+}
+
+export function Tile({ g, focused }) {
+  const size = focused ? TILE_FOCUS : TILE
+  const sys = g.kind === 'settings' || g.kind === 'power'
   const glow = g.accent ? `0 20px 60px ${g.accent}88` : `0 20px 64px ${a('p', 0.55)}, 0 0 110px ${a('s', 0.28)}`
   return (
     <motion.div animate={{ width: size, height: size }} transition={SPRING} className="relative flex-none">
-      <div className="absolute inset-0 overflow-hidden rounded-[28px]" style={{ background: bg, boxShadow: '0 10px 24px rgba(0,0,0,.45)' }}>
-        {g.kind === 'settings' && <Svg><path d="M4 7h10M18 7h2M4 17h2M10 17h10" /><circle cx="16" cy="7" r="2" /><circle cx="8" cy="17" r="2" /></Svg>}
-        {g.kind === 'power' && <Svg><path d="M12 3v9" /><path d="M6.4 6.4a8 8 0 1 0 11.2 0" /></Svg>}
-        {!sys && !g.tile && (g.icon ? (<>
-          <img src={g.icon} alt="" className="absolute left-1/2 top-1/2 h-[60%] w-[60%] -translate-x-1/2 -translate-y-1/2 object-contain drop-shadow-[0_10px_20px_rgba(0,0,0,.55)]" />
-        </>) : <span className="absolute inset-0 grid place-items-center font-semibold text-white/85" style={{ fontSize: size * 0.4 }}>{g.name[0]}</span>)}
-        {g.fav && <div className="absolute right-3 top-3 grid h-8 w-8 place-items-center rounded-full bg-black/40 text-white"><StarIcon size={16} /></div>}
-        <div className="pointer-events-none absolute inset-0 rounded-[28px] bg-gradient-to-b from-white/[0.22] via-transparent to-black/30 ring-1 ring-inset ring-white/20" />
-      </div>
+      <TileFace g={g} size={size} />
       <motion.div initial={false} animate={{ opacity: focused ? 1 : 0 }} transition={{ duration: 0.2 }} className="pointer-events-none absolute inset-0 rounded-[28px]"
         style={{ boxShadow: `0 0 0 3px rgba(255,255,255,.96), ${glow}` }} />
       <motion.div animate={{ opacity: focused ? 1 : 0, y: focused ? 0 : -6 }} className="pointer-events-none absolute left-1 top-full mt-5 whitespace-nowrap">
@@ -61,6 +69,16 @@ export function Tile({ g, focused }) {
   )
 }
 
+// Profile picture, or the first letters of the name when there isn't one.
+export function Avatar({ profile, size = 44 }) {
+  const initials = (profile?.name || 'P1').split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase()
+  return (
+    <div className="grid flex-none place-items-center overflow-hidden rounded-full bg-charcoal font-semibold" style={{ width: size, height: size, fontSize: size * 0.36 }}>
+      {profile?.avatar ? <img src={profile.avatar} alt="" className="h-full w-full object-cover" draggable={false} /> : initials}
+    </div>
+  )
+}
+
 const Battery = ({ pct }) => (
   <span className="flex items-center gap-2">
     <span className="relative h-[14px] w-[26px] rounded-[4px] border border-white/60 p-[1.5px]">
@@ -70,7 +88,7 @@ const Battery = ({ pct }) => (
   </span>
 )
 
-export function TopBar({ status, padConnected, pad }) {
+export function TopBar({ status, padConnected, pad, profile, topFocused, media, pinSet }) {
   const [now, setNow] = useState(new Date())
   const [bat, setBat] = useState(null)
   const [online, setOnline] = useState(navigator.onLine)
@@ -93,8 +111,17 @@ export function TopBar({ status, padConnected, pad }) {
           <div className="mt-1.5 text-base text-white/50">{now.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}</div>
         </div>
       </div>
+      {media?.active && media.status === 'Playing' && media.title && (
+        <div className="mx-8 flex min-w-0 flex-1 items-center justify-center">
+          <div className={`flex max-w-[460px] items-center gap-3 rounded-full px-5 py-2.5 text-lg ${glass}`}>
+            <span className="flex-none" style={{ color: `rgb(var(--s))` }}><MusicIcon size={22} /></span>
+            <span className="truncate">{media.title}{media.artist ? <span className="text-white/55">  ·  {media.artist}</span> : null}</span>
+          </div>
+        </div>
+      )}
       <div className={`flex items-center gap-5 rounded-full py-2 pl-7 pr-2 text-xl ${glass}`}>
         <span className="flex items-center gap-2.5"><i className="h-2.5 w-2.5 rounded-full" style={online ? { background: a('s'), boxShadow: `0 0 12px ${a('s')}` } : { background: 'rgba(255,255,255,.3)' }} />{online ? 'Online' : 'Offline'}</span>
+        {pinSet && <LockIcon size={22} />}
         <span className="h-6 w-px bg-white/15" />
         {w.supported && <WifiIcon size={24} level={Math.ceil((w.signal || 0) / 34)} off={w.radio === 'Off'} />}
         {bt.supported && <BtIcon size={24} off={bt.radio !== 'On'} />}
@@ -107,9 +134,13 @@ export function TopBar({ status, padConnected, pad }) {
         {bat !== null && <Battery pct={bat} />}
         <span className="h-6 w-px bg-white/15" />
         <span className="font-medium tabular-nums">{now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>
-        <div className="rounded-full p-[2.5px]" style={{ background: grad(135) }}>
-          <div className="grid h-11 w-11 place-items-center rounded-full bg-charcoal text-base font-semibold">P1</div>
-        </div>
+        <motion.div animate={{ scale: topFocused ? 1.06 : 1 }} className="flex items-center gap-3 rounded-full py-[2.5px] pl-4 pr-[2.5px]"
+          style={topFocused ? { background: grad(100, 0.95), boxShadow: `0 0 0 2px rgba(255,255,255,.9), 0 8px 30px ${a('p', 0.55)}` } : undefined}>
+          <span className="max-w-[160px] truncate text-lg font-medium">{profile?.name || 'Player 1'}</span>
+          <span className="rounded-full p-[2.5px]" style={{ background: topFocused ? 'rgba(255,255,255,.9)' : grad(135) }}>
+            <Avatar profile={profile} size={44} />
+          </span>
+        </motion.div>
       </div>
     </div>
   )
@@ -168,6 +199,7 @@ export function Prompts({ mode, canArt, show }) {
       <div className={`flex gap-5 whitespace-nowrap rounded-full px-5 py-2 ${glass}`}>
         <Key k="A" text={kb ? 'Type' : 'Select'} /><Key k="B" text={kb ? 'Cancel' : 'Back'} />
         {mode === 'home' && canArt && <Key k="Y" text="Artwork" />}
+        {mode === 'home' && <Key k="↑" text="Profile" />}
         {mode === 'home' && <Key k="X" text="Appearance" />}
         {mode === 'home' && <Key k="≡" text="Settings" />}
         {mode === 'home' && <Key k="View" text="Quick menu" />}
@@ -191,12 +223,13 @@ const Row = ({ r, active }) => (
   </motion.div>
 )
 
-export function Menu({ title, sub, rows, sel }) {
+export function Menu({ title, sub, rows, sel, header }) {
   const s = Math.min(sel, rows.length - 1)
   const start = Math.max(0, Math.min(s - 3, rows.length - 7))
   return (
     <Overlay>
       <div className={`w-[620px] rounded-[32px] p-8 ${glass}`}>
+        {header}
         <h2 className="text-4xl font-semibold">{title}</h2>
         {sub && <p className="mt-2 text-xl text-white/60">{sub}</p>}
         <div className="mt-6 flex flex-col gap-3">{rows.slice(start, start + 7).map((r, i) => <Row key={r.label + (start + i)} r={r} active={start + i === s} />)}</div>

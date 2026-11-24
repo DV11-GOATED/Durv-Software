@@ -32,3 +32,34 @@ export function applyTheme(t) {
   st.setProperty('--p', hexToRgb(t.primary).join(' '))
   st.setProperty('--s', hexToRgb(t.secondary).join(' '))
 }
+
+/* ---------- startup animation palette ----------
+   The splash used to hard-code pink / violet / periwinkle. These are now derived from the user's two theme colours:
+     secondary -> the "hot" accent (was pink)      primary -> the main glow (was violet)
+     third     -> a cooler neighbour of primary    (was periwinkle)
+   With the default Nebula theme the result is within a few RGB points of the original animation. */
+const mixRgb = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t))
+const WHITE = [255, 255, 255]
+// Very dark themes would make the glows invisible on the dark background, so keep the splash colours reasonably bright.
+const lift = (hex) => {
+  const [h, s, l] = hexToHsl(hex)
+  return hexToRgb(hslToHex(h, s < 0.05 ? s : Math.max(s, 0.5), Math.max(l, 0.55)))
+}
+export function splashPalette(t) {
+  const theme = t || DEFAULT_THEME
+  const P = lift(theme.primary), S = lift(theme.secondary)
+  const [hp, sp, lp] = hexToHsl(theme.primary), [hs] = hexToHsl(theme.secondary)
+  const d = ((hs - hp + 540) % 360) - 180                       // signed hue distance primary -> secondary
+  const grey = sp < 0.08                                          // hue means nothing for a grey primary: don't invent colour
+  const third = hexToRgb(hslToHex((hp + (d >= 0 ? -32 : 32) + 360) % 360, grey ? sp : Math.max(sp, 0.7), Math.min(0.72, Math.max(lp, 0.6))))
+  const str = (c) => c.join(',')
+  const deep = hslToHex(hp, grey ? 0.08 : 0.7, 0.065)                         // the old #05061c, tinted by the theme
+  const navy = hexToRgb(hslToHex(hp, grey ? 0.08 : 0.72, 0.26))                // the old rgba(18,24,118) vignette
+  return {
+    PINK: str(S), VIOLET: str(P), PERI: str(third),
+    LAV: str(mixRgb(P, WHITE, 0.82)),                           // pale tint for ribbons / flare streak
+    FLARE: str(mixRgb(S, WHITE, 0.88)),                         // white-hot centre of the reveal flash
+    SHEEN: str(mixRgb(S, WHITE, 0.92)),                         // glass sweep across the logo
+    NAVY: str(navy), DEEP: str(hexToRgb(deep)), DEEP_HEX: deep,
+  }
+}

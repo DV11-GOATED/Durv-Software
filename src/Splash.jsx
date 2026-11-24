@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { splashPalette, DEFAULT_THEME } from "./theme";
 
 /* ───────────── helpers ───────────── */
 const DURATION = 6;
@@ -14,8 +15,7 @@ const rng = (seed) => () => {
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 };
 
-const PINK = "240,110,210", VIOLET = "139,92,246", PERI = "104,138,255", LAV = "233,228,255";
-const PALETTE = [PINK, PERI, VIOLET, LAV];
+// Colours are no longer hard-coded: splashPalette(theme) in theme.js derives them from the OS theme the user picked.
 
 function makeSprite(rgb, hard) {
   const c = document.createElement("canvas");
@@ -177,14 +177,24 @@ const glow = (g2, x, y, rad, stops) => {
   g2.fillStyle = g; g2.fillRect(x - rad, y - rad, rad * 2, rad * 2);
 };
 
-export default function StartupAnimation({ onComplete, children }) {
+export default function StartupAnimation({ onComplete, onDone, theme, sound = true, skipToken = 0, children }) {
   const [done, setDone] = useState(false);
+  // palette is fixed for this run: the theme can't change while the 6 s intro is playing
+  const palRef = useRef(null);
+  if (!palRef.current) palRef.current = splashPalette(theme || DEFAULT_THEME);
+  const soundRef = useRef(sound);
+  soundRef.current = sound;
   const layerRef = useRef(null), canvasRef = useRef(null), hintRef = useRef(null);
-  const cbRef = useRef(onComplete);
-  cbRef.current = onComplete;
+  const cbRef = useRef(onDone || onComplete);
+  cbRef.current = onDone || onComplete;
+
+  // lets the host (gamepad A / B) skip the intro through the same path as a key press
+  useEffect(() => { if (skipToken) window.dispatchEvent(new Event("splash:skip")); }, [skipToken]);
 
   useEffect(() => {
     const layer = layerRef.current, canvas = canvasRef.current, hint = hintRef.current;
+    const { PINK, VIOLET, PERI, LAV, FLARE, SHEEN, NAVY, DEEP } = palRef.current;
+    const PALETTE = [PINK, PERI, VIOLET, LAV];
     const c = canvas.getContext("2d", { alpha: false });
     // half-cost tricks: soft lighting lives on a quarter-res buffer, the title on its own small canvas
     const bg = document.createElement("canvas"), bc = bg.getContext("2d");
@@ -210,7 +220,7 @@ export default function StartupAnimation({ onComplete, children }) {
     const elapsed = () => (start == null ? 0 : Math.max(0, (performance.now() - start) / 1000));
 
     /* audio */
-    const audio = createAudio(() => false);
+    const audio = createAudio(() => soundRef.current === false);
     const tryStart = () => {
       if (!audio || scheduled || stopped || audio.ctx.state !== "running") return;
       scheduled = true; audio.schedule(elapsed());
@@ -256,6 +266,8 @@ export default function StartupAnimation({ onComplete, children }) {
     };
     window.addEventListener("keydown", onInput);
     window.addEventListener("pointerdown", onInput);
+    const onSkipEvt = () => { resume(); if (elapsed() > 1.0) skip(); };
+    window.addEventListener("splash:skip", onSkipEvt);
 
     const finish = () => {
       if (finished) return; finished = true;
@@ -277,7 +289,7 @@ export default function StartupAnimation({ onComplete, children }) {
       const p = lerp(-0.3, 1.3, easeInOutCubic((t - 4.0) / 1.0)), bx = x0 + sz * p;
       if (p > -0.29 && p < 1.29) {
         const g = tc.createLinearGradient(bx - sz * 0.25, y0, bx + sz * 0.25, y0 + sz);
-        g.addColorStop(0, `rgba(${PINK},0)`); g.addColorStop(0.5, "rgba(255,240,252,.95)"); g.addColorStop(1, `rgba(${PERI},0)`);
+        g.addColorStop(0, `rgba(${PINK},0)`); g.addColorStop(0.5, `rgba(${SHEEN},.95)`); g.addColorStop(1, `rgba(${PERI},0)`);
         tc.globalCompositeOperation = "source-atop"; tc.fillStyle = g; tc.fillRect(0, 0, tcw, tch);
       }
       const op = smooth(3.7, 4.5, t) * (t > 4.8 ? 0.93 + 0.07 * Math.sin((t - 4.8) * 2.6) : 1);
@@ -299,8 +311,8 @@ export default function StartupAnimation({ onComplete, children }) {
 
       /* soft lighting on the quarter-res buffer */
       bc.globalCompositeOperation = "source-over";
-      bc.fillStyle = "#05061c"; bc.fillRect(0, 0, W, H);
-      if (nv > 0.001) glow(bc, cx, cy, Math.max(W, H) * 0.75, [[0, `rgba(18,24,118,${nv})`], [1, "rgba(5,6,28,0)"]]);
+      bc.fillStyle = `rgb(${DEEP})`; bc.fillRect(0, 0, W, H);
+      if (nv > 0.001) glow(bc, cx, cy, Math.max(W, H) * 0.75, [[0, `rgba(${NAVY},${nv})`], [1, `rgba(${DEEP},0)`]]);
       bc.globalCompositeOperation = "lighter";
       if (amb > 0.001) glow(bc, cx, cy, minD * 0.38, [[0, `rgba(${LAV},${0.12 * amb})`], [0.35, `rgba(${VIOLET},${0.1 * amb})`], [1, `rgba(${VIOLET},0)`]]);
       if (mid > 0.001) {
@@ -316,7 +328,7 @@ export default function StartupAnimation({ onComplete, children }) {
         }
         bc.restore();
       }
-      if (F > 0.002) glow(bc, cx, cy, minD * (0.22 + 0.22 * P), [[0, `rgba(255,236,252,${0.85 * Math.min(F, 1)})`], [0.25, `rgba(${PINK},${0.32 * F})`], [0.6, `rgba(${VIOLET},${0.14 * F})`], [1, `rgba(${VIOLET},0)`]]);
+      if (F > 0.002) glow(bc, cx, cy, minD * (0.22 + 0.22 * P), [[0, `rgba(${FLARE},${0.85 * Math.min(F, 1)})`], [0.25, `rgba(${PINK},${0.32 * F})`], [0.6, `rgba(${VIOLET},${0.14 * F})`], [1, `rgba(${VIOLET},0)`]]);
       if (tg > 0.001) glow(bc, cx, cy, minD * 0.3, [[0, `rgba(${PINK},${0.09 * tg})`], [0.5, `rgba(${PERI},${0.07 * tg})`], [1, `rgba(${PERI},0)`]]);
 
       c.globalCompositeOperation = "source-over"; c.globalAlpha = 1;
@@ -430,6 +442,7 @@ export default function StartupAnimation({ onComplete, children }) {
       window.removeEventListener("resize", resize);
       window.removeEventListener("keydown", onInput);
       window.removeEventListener("pointerdown", onInput);
+      window.removeEventListener("splash:skip", onSkipEvt);
       if (audio) { audio.ctx.removeEventListener("statechange", tryStart); audio.close(); }
     };
   }, []);
@@ -441,10 +454,10 @@ export default function StartupAnimation({ onComplete, children }) {
 
       {!done && (
         <div style={{ position: "fixed", inset: 0, zIndex: 9999, overflow: "hidden", fontFamily: FONT }}>
-          <div ref={layerRef} style={{ position: "absolute", inset: 0, background: "#05061c", willChange: "opacity, transform" }}>
+          <div ref={layerRef} style={{ position: "absolute", inset: 0, background: palRef.current.DEEP_HEX, willChange: "opacity, transform" }}>
             <h1 style={srOnly}>{TITLE}</h1>
             <canvas ref={canvasRef} aria-hidden="true" style={{ position: "absolute", inset: 0, display: "block" }} />
-            <div ref={hintRef} style={{ position: "absolute", left: 0, right: 0, bottom: 28, textAlign: "center", fontSize: 12, letterSpacing: "0.06em", color: "rgba(233,228,255,.5)", opacity: 0, pointerEvents: "none" }}>
+            <div ref={hintRef} style={{ position: "absolute", left: 0, right: 0, bottom: 28, textAlign: "center", fontSize: 12, letterSpacing: "0.06em", color: `rgba(${palRef.current.LAV},.5)`, opacity: 0, pointerEvents: "none" }}>
               Press any key or click to skip
             </div>
           </div>

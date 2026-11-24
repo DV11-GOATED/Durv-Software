@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion'
 import { solid, grad, a } from './ui'
-import { WifiIcon, BtIcon, VolIcon, PadIcon, SunIcon } from './icons'
+import { WifiIcon, BtIcon, VolIcon, PadIcon, SunIcon, MusicIcon } from './icons'
 
 const Section = ({ active, title, hint, children }) => (
   <motion.div animate={{ opacity: active ? 1 : 0.7 }} className="rounded-2xl p-4"
@@ -28,7 +28,7 @@ function batteryInfo(c, pad) {
   return { text: LEVELS[c.level] || 'Wireless', seg: c.level + 1 }
 }
 
-export default function QuickMenu({ status, rows, sel, sc, padName, padIds, pad }) {
+export default function QuickMenu({ status, rows, sel, sc, padName, padIds, pad, media }) {
   const act = rows[sel]
   const vol = status.volume
   const w = status.wifi || {}
@@ -41,7 +41,7 @@ export default function QuickMenu({ status, rows, sel, sc, padName, padIds, pad 
   return (
     <motion.div initial={{ x: 560, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: 560, opacity: 0 }}
       transition={{ type: 'spring', stiffness: 300, damping: 34 }}
-      className={`absolute bottom-8 right-8 top-8 z-30 flex w-[520px] flex-col gap-3 overflow-hidden rounded-[32px] p-7 ${solid}`}>
+      className={`absolute bottom-8 right-8 top-8 z-30 flex w-[520px] flex-col gap-2.5 overflow-hidden rounded-[32px] p-7 ${solid}`}>
       <div>
         <h2 className="text-4xl font-semibold">Quick menu</h2>
         <p className="mt-1 text-lg text-white/50">Sound, connections and shortcuts.</p>
@@ -63,6 +63,16 @@ export default function QuickMenu({ status, rows, sel, sc, padName, padIds, pad 
             <span className="w-14 text-right text-xl tabular-nums">{status.muted ? 'Mute' : `${vol}%`}</span>
           </div>
         )}
+      </Section>
+
+      <Section active={act === 'music'} title="Music" hint={media?.active ? '◀ ▶ skip  ·  A play/pause' : 'A  open music'}>
+        <div className="flex items-center gap-4">
+          <MusicIcon size={28} />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-xl">{media?.active ? media.title || 'Unknown track' : 'Nothing playing'}</div>
+            <div className="truncate text-sm text-white/45">{media?.active ? `${media.artist || ''}${media.artist ? '  ·  ' : ''}${media.status === 'Playing' ? 'Playing' : 'Paused'}` : 'Open Spotify or Apple Music'}</div>
+          </div>
+        </div>
       </Section>
 
       <Section active={act === 'wifi'} title="Wi-Fi" hint="A  networks">
