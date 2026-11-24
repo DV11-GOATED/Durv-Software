@@ -14,4 +14,11 @@ contextBridge.exposeInMainWorld('shell', {
   sysRadio: call('sys:radio'), btDevices: call('sys:btDevices'), btBattery: call('sys:btBattery'), wifiScan: call('sys:wifiScan'), wifiConnect: call('sys:wifiConnect'),
   openSettings: call('sys:openSettings'),
   onReturn: (cb) => ipcRenderer.on('shell:returned', cb),
+  // first-frame info, PIN lock, profile, music, launch screen
+  boot: call('boot:get'),
+  pinVerify: call('pin:verify'), pinSet: call('pin:set'), pinClear: call('pin:clear'), pinSkip: call('pin:skip'), pinLock: call('pin:lock'),
+  setProfileImage: call('profile:setImage'), clearProfileImage: call('profile:clear'), setProfileName: call('profile:setName'),
+  media: call('media:get'), mediaCmd: call('media:cmd'), musicOpen: call('music:open'),
+  cancelLaunch: call('launch:cancel'),
+  onGame: (cb) => ipcRenderer.on('shell:game', (_e, ev) => cb(ev)),
 })
