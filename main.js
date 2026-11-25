@@ -1,8 +1,3 @@
-// ### Downloads
-- **Durv Software Setup 1.0.0.exe** — Standard Windows installer (recommended for fastest startup and direct shell boot).
-- **Durv Software 1.0.0.exe** — Standalone portable executable (no installation required).
-
-
 const { app, BrowserWindow, ipcMain, shell, protocol, net, nativeImage, screen } = require('electron')
 const { exec, execFile, spawn } = require('child_process')
 const path = require('path')
