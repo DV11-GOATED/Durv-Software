@@ -18,7 +18,7 @@ contextBridge.exposeInMainWorld('shell', {
   boot: call('boot:get'),
   pinVerify: call('pin:verify'), pinSet: call('pin:set'), pinClear: call('pin:clear'), pinSkip: call('pin:skip'), pinLock: call('pin:lock'),
   setProfileImage: call('profile:setImage'), clearProfileImage: call('profile:clear'), setProfileName: call('profile:setName'),
-  media: call('media:get'), mediaCmd: call('media:cmd'), musicOpen: call('music:open'),
+  media: call('media:get'), mediaCmd: call('media:cmd'), musicOpen: call('music:open'), musicClose: call('music:close'),
   cancelLaunch: call('launch:cancel'),
   onGame: (cb) => ipcRenderer.on('shell:game', (_e, ev) => cb(ev)),
 })

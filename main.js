@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, protocol, net, nativeImage } = require('electron')
+const { app, BrowserWindow, ipcMain, shell, protocol, net, nativeImage, screen } = require('electron')
 const { exec, execFile, spawn } = require('child_process')
 const path = require('path')
 const fs = require('fs')
@@ -8,6 +8,7 @@ const { pathToFileURL } = require('url')
 const sys = require('./lib/sys')
 const security = require('./lib/security')
 const { steamGames } = require('./lib/steam')
+const padwatch = require('./lib/padwatch')
 
 // Same data folder in dev and packaged builds: %APPDATA%\Durv Software
 app.setName('Durv Software')
@@ -50,6 +51,10 @@ const DEFAULT_CONFIG = {
   sort: 'recent',               // recent | playtime | name
   startupAnimation: true,
   startupSound: true,
+  padWatch: true,                 // listen to the controller while another app is in front (LT+RT back, RT tab switch)
+  returnHoldMs: 600,              // hold LT + RT this long to jump back to Durv Software
+  tabApps: ['chrome', 'msedge', 'firefox', 'brave', 'opera', 'vivaldi'],   // RT = next tab only while one of these is in front
+  closeExplorerWithMusic: true,   // "Close music" also closes Explorer, but only if Durv Software started it
   ignore: ['unins', 'setup', 'redist', 'vcredist', 'vc_redist', 'dxsetup', 'crash', 'dotnet', 'installer', 'updater', 'helper', 'easyanticheat', 'battleye'],
 }
 const DEFAULT_THEME = { preset: 'nebula', primary: '#8b5cff', secondary: '#ff4fb8', hints: 'auto', sounds: true }
@@ -226,12 +231,53 @@ async function pack() {
 }
 
 // ---------- window ----------
+// "Windowed fullscreen": a frameless window sized exactly to the screen. Not exclusive fullscreen / kiosk, so other apps,
+// Alt+Tab and Windows popups keep working, and Windows still hides the taskbar while we are in front.
+let homeDisplayId = null
+let windowed = false          // F11: small window instead of filling the screen
+const homeDisplay = () => {
+  const all = screen.getAllDisplays()
+  return all.find((d) => d.id === homeDisplayId) || screen.getPrimaryDisplay()
+}
+function fillScreen() {
+  if (!win || win.isDestroyed()) return
+  if (win.isFullScreen()) win.setFullScreen(false)
+  win.setBounds(homeDisplay().bounds)
+}
+function toggleWindowed() {
+  if (!win || win.isDestroyed()) return
+  windowed = !windowed
+  if (!windowed) return fillScreen()
+  const b = homeDisplay().bounds, w = 1280, h = 720
+  win.setBounds({ x: b.x + Math.round((b.width - w) / 2), y: b.y + Math.round((b.height - h) / 2), width: w, height: h })
+}
+
+// Windows only hands focus to a window it considers "foreground", and the page only receives controller input once the
+// web contents (not just the window) has focus. Ask nicely first, then force it, and retry for a few seconds.
+function focusWin() {
+  if (!win || win.isDestroyed()) return
+  if (win.isMinimized()) win.restore()
+  win.show(); win.moveTop(); win.focus(); win.webContents.focus()
+  app.focus({ steal: true })
+}
+function grabFocus() {
+  focusWin()
+  let n = 0
+  const t = setInterval(() => {
+    if (!win || win.isDestroyed() || (win.isFocused() && win.webContents.isFocused()) || ++n > 8) return clearInterval(t)
+    focusWin()
+    if (n === 2 || n === 5) sys.takeFocus(process.pid).catch(() => {})     // PowerShell trick, for when Windows blocks plain focus()
+  }, 700)
+}
+
 function createWindow() {
   const appIcon = path.join(__dirname, 'build', 'Durv Software_cover.ico')
+  const home = screen.getPrimaryDisplay()
+  homeDisplayId = home.id
   win = new BrowserWindow({
     title: 'Durv Software',
     icon: fs.existsSync(appIcon) ? appIcon : undefined,
-    fullscreen: true, kiosk: !isDev, width: 1280, height: 720, frame: false,
+    ...home.bounds, frame: false, resizable: false, fullscreenable: false,
     backgroundColor: '#0a0a12', show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -239,18 +285,19 @@ function createWindow() {
       autoplayPolicy: 'no-user-gesture-required',   // startup chime + UI sounds
     },
   })
-  win.webContents.on('before-input-event', (e, input) => {   // F11 toggles fullscreen (handy in dev)
-    if (input.type === 'keyDown' && input.key === 'F11') { win.setFullScreen(!win.isFullScreen()); e.preventDefault() }
+  win.webContents.on('before-input-event', (e, input) => {   // F11 toggles windowed (handy in dev)
+    if (input.type === 'keyDown' && input.key === 'F11') { toggleWindowed(); e.preventDefault() }
   })
-  win.once('ready-to-show', () => win.show())
+  win.once('ready-to-show', () => { fillScreen(); win.show(); grabFocus() })
+  win.webContents.on('did-finish-load', () => { if (win && !win.isDestroyed() && win.isVisible()) win.webContents.focus() })
   isDev ? win.loadURL('http://localhost:5173') : win.loadFile(path.join(__dirname, 'dist', 'index.html'))
 }
 
 function reclaim() {
   if (!win) return
   if (win.isMinimized()) win.restore()
-  win.setAlwaysOnTop(true); win.show(); win.focus()
-  if (!isDev) win.setFullScreen(true)
+  win.setAlwaysOnTop(true); win.show(); win.focus(); win.webContents.focus()
+  if (!windowed) fillScreen()
   setTimeout(() => win && win.setAlwaysOnTop(false), 600)
   win.webContents.send('shell:returned')
   sys.status().catch(() => {})
@@ -260,8 +307,8 @@ function reclaim() {
 function bringBack() {
   if (!win) return
   if (win.isMinimized()) win.restore()
-  win.setAlwaysOnTop(true); win.show(); win.focus()
-  if (!isDev) win.setFullScreen(true)
+  win.setAlwaysOnTop(true); win.show(); win.focus(); win.webContents.focus()
+  if (!windowed) fillScreen()
   setTimeout(() => win && win.setAlwaysOnTop(false), 600)
 }
 
@@ -490,6 +537,29 @@ const MUSIC = {
   apple: { name: 'Apple Music', app: 'Apple Music', scheme: 'music', web: 'https://music.apple.com' },
   ytmusic: { name: 'YouTube Music', app: null, scheme: null, web: 'https://music.youtube.com' },
 }
+// ----- Windows shell (Explorer) -----
+// When Durv Software is the Windows shell there is no Explorer, and the Store music apps need one. Start it and wait for the
+// taskbar window to exist before launching anything. We remember that we started it so "Close music" can stop it again.
+let startedExplorer = false
+async function ensureWindows() {
+  if (process.platform !== 'win32') return
+  if (!(await procRunning('explorer.exe'))) {
+    spawn('explorer.exe', [], { detached: true, stdio: 'ignore' }).unref()
+    startedExplorer = true
+  }
+  const t0 = Date.now()
+  while (Date.now() - t0 < 25000) {
+    const r = await sys.shellReady().catch(() => null)
+    if (!r) { await sleep(3000); return }          // helper unavailable: fixed wait instead
+    if (r.ready) { await sleep(1500); return }     // taskbar is up; give the shell a moment to settle
+    await sleep(500)
+  }
+}
+
+const killProc = (name) => new Promise((res) =>
+  execFile('taskkill', ['/F', '/T', '/IM', name], { windowsHide: true }, (err) => res(!err)))
+const MUSIC_PROCS = ['Spotify.exe', 'AppleMusic*', 'Apple Music*']
+
 ipcMain.handle('media:get', () => sys.media().catch(() => ({ active: false })))
 ipcMain.handle('media:cmd', (_e, action) => sys.mediaCmd(action).catch(() => ({ active: false })))
 ipcMain.handle('music:open', async (_e, id) => {
@@ -498,6 +568,7 @@ ipcMain.handle('music:open', async (_e, id) => {
   const openedAt = Date.now()
   let via = null
   try {
+    if (m.app) await ensureWindows()          // Windows (Explorer) must be up before a music app is started
     const found = m.app ? await sys.findApp(m.app).catch(() => null) : null
     if (found && found.id) { spawn('explorer.exe', [`shell:AppsFolder\\${found.id}`], { detached: true, stdio: 'ignore' }).unref(); via = 'app' }
     else if (m.scheme && await protocolRegistered(m.scheme)) { shell.openExternal(`${m.scheme}:`); via = 'protocol' }
@@ -506,6 +577,18 @@ ipcMain.handle('music:open', async (_e, id) => {
   // These apps grab the screen when they start. Take it back, unless a game was launched in the meantime.
   for (const ms of [2500, 6000]) setTimeout(() => { if (lastLaunchAt < openedAt) bringBack() }, ms)
   return { ok: true, via, name: m.name }
+})
+
+ipcMain.handle('music:close', async () => {
+  let closed = false
+  for (const name of MUSIC_PROCS) if (await killProc(name)) closed = true
+  let explorer = false
+  if (startedExplorer && loadCfg().closeExplorerWithMusic !== false) {      // never touch an Explorer that was already the user's desktop
+    explorer = await killProc('explorer.exe')
+    startedExplorer = false
+  }
+  bringBack()
+  return { ok: true, closed, explorer }
 })
 
 ipcMain.handle('launch:cancel', () => { if (launchToken) launchToken.cancelled = true; return true })
@@ -578,7 +661,7 @@ ipcMain.handle('system:power', (_e, action) => {
 if (!app.requestSingleInstanceLock()) app.quit()
 else {
   app.on('second-instance', reclaim)
-  app.on('before-quit', sys.stop)
+  app.on('before-quit', () => { padwatch.stop(); sys.stop() })
   app.whenReady().then(() => {
     ensureFiles()
     sys.init(dataDir())
@@ -591,6 +674,8 @@ else {
       return net.fetch(pathToFileURL(file).toString())
     })
     createWindow()
+    const cfg = loadCfg()
+    if (cfg.padWatch !== false) padwatch.start(dataDir(), { tabApps: cfg.tabApps, holdMs: cfg.returnHoldMs, pid: process.pid }, () => { if (win && !win.isFocused()) reclaim() })
   })
   app.on('window-all-closed', () => app.quit())
 }
