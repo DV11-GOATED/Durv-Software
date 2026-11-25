@@ -261,6 +261,7 @@ export default function StartupAnimation({ onComplete, onDone, theme, sound = tr
     };
     const onInput = (e) => {
       resume();
+      if (e.type === "keydown" && (e.repeat || ["Alt", "Control", "Shift", "Meta", "OS", "AltGraph"].includes(e.key))) return;   // modifier taps (incl. synthetic ones) must not skip the intro
       if (e.target && e.target.closest && e.target.closest("[data-ss-ui]")) return;
       if (elapsed() > 1.0) skip();
     };
