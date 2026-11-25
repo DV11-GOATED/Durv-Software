@@ -241,13 +241,14 @@ const homeDisplay = () => {
 }
 function fillScreen() {
   if (!win || win.isDestroyed()) return
-  if (win.isFullScreen()) win.setFullScreen(false)
-  win.setBounds(homeDisplay().bounds)
+  win.setBounds(homeDisplay().bounds)        // land on the right monitor first
+  if (!win.isFullScreen()) win.setFullScreen(true)   // Electron's normal (non-kiosk) fullscreen: borderless, no taskbar, Alt+Tab still works
 }
 function toggleWindowed() {
   if (!win || win.isDestroyed()) return
   windowed = !windowed
   if (!windowed) return fillScreen()
+  if (win.isFullScreen()) win.setFullScreen(false)
   const b = homeDisplay().bounds, w = 1280, h = 720
   win.setBounds({ x: b.x + Math.round((b.width - w) / 2), y: b.y + Math.round((b.height - h) / 2), width: w, height: h })
 }
@@ -277,7 +278,7 @@ function createWindow() {
   win = new BrowserWindow({
     title: 'Durv Software',
     icon: fs.existsSync(appIcon) ? appIcon : undefined,
-    ...home.bounds, frame: false, resizable: false, fullscreenable: false,
+    ...home.bounds, frame: false, fullscreenable: true,
     backgroundColor: '#0a0a12', show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
