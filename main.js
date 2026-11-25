@@ -265,9 +265,10 @@ function grabFocus() {
   focusWin()
   let n = 0
   const t = setInterval(() => {
-    if (!win || win.isDestroyed() || (win.isFocused() && win.webContents.isFocused()) || ++n > 8) return clearInterval(t)
+    if (!win || win.isDestroyed() || (win.isFocused() && win.webContents.isFocused()) || ++n > 25) return clearInterval(t)
     focusWin()
-    if (n === 2 || n === 5) sys.takeFocus(process.pid).catch(() => {})     // PowerShell trick, for when Windows blocks plain focus()
+    padwatch.focus()                                                      // PowerShell trick (own process), for when Windows blocks plain focus()
+    if (n === 3) sys.takeFocus(process.pid).catch(() => {})               // same trick via the helper, in case padWatch is off
   }, 700)
 }
 
@@ -290,6 +291,7 @@ function createWindow() {
     if (input.type === 'keyDown' && input.key === 'F11') { toggleWindowed(); e.preventDefault() }
   })
   win.once('ready-to-show', () => { fillScreen(); win.show(); grabFocus() })
+  win.on('enter-full-screen', () => setTimeout(focusWin, 150))      // the fullscreen switch can drop focus
   win.webContents.on('did-finish-load', () => { if (win && !win.isDestroyed() && win.isVisible()) win.webContents.focus() })
   isDev ? win.loadURL('http://localhost:5173') : win.loadFile(path.join(__dirname, 'dist', 'index.html'))
 }
