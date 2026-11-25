@@ -199,6 +199,13 @@ export default function Dashboard() {
     notify(r.ok ? (r.via === 'web' ? `${r.name} opened in your browser` : `Opening ${r.name}…`) : r.error, r.ok ? 'info' : 'error')
     setTimeout(music.refresh, 4000); setTimeout(music.refresh, 9000)
   }
+  const closeMusic = async () => {
+    setMusicBusy('close')
+    const r = await window.shell.musicClose().catch(() => ({ ok: false }))
+    setMusicBusy(null)
+    notify(r.ok ? 'Music closed' : 'Could not close the music apps', r.ok ? 'info' : 'error')
+    setTimeout(music.refresh, 800)
+  }
   const search = () => keyboard('Search your library', (q) => {
     setModal(null)
     const n = items.findIndex((g) => !g.kind && g.name.toLowerCase().includes(q.trim().toLowerCase()))
@@ -416,6 +423,7 @@ export default function Dashboard() {
         case 'music':
           if (modal.sel === 0) return music.command(['prev', 'toggle', 'next'][modal.tsel])
           if (modal.sel === MUSIC_ROWS - 1) return setModal(modal.prev ?? null)
+          if (modal.sel === MUSIC_ROWS - 2) return closeMusic()
           return openMusic(SERVICES[modal.sel - 1].id)
         case 'quick': return quickConfirm()
         case 'keyboard': { const r = pressKey(modal); return r.submit ? submitKeyboard() : setModal(r.m) }

@@ -8,7 +8,7 @@ export const SERVICES = [
   { id: 'apple', name: 'Apple Music', sub: 'Starts the Apple Music app in the background' },
   { id: 'ytmusic', name: 'YouTube Music', sub: 'Opens in your browser, keeps playing behind the shell' },
 ]
-export const MUSIC_ROWS = 2 + SERVICES.length      // now playing, each service, Done
+export const MUSIC_ROWS = 3 + SERVICES.length      // now playing, each service, Close music, Done
 
 const EMPTY = { active: false }
 
@@ -91,6 +91,11 @@ export default function MusicPanel({ media, sel, tsel, busyId }) {
       </Section>
 
       <div className="mt-auto">
+        <motion.div animate={{ scale: sel === MUSIC_ROWS - 2 ? 1.03 : 1 }} className="mb-3 rounded-2xl px-5 py-3 text-center"
+          style={sel === MUSIC_ROWS - 2 ? { background: grad(100), boxShadow: `0 10px 34px ${a('p', 0.5)}` } : { background: 'rgba(255,255,255,.08)' }}>
+          <div className="text-xl font-semibold">{busyId === 'close' ? 'Closing…' : 'Close music'}</div>
+          <div className={`text-sm ${sel === MUSIC_ROWS - 2 ? 'text-white/80' : 'text-white/45'}`}>Quits the music apps and the Windows desktop</div>
+        </motion.div>
         <motion.div animate={{ scale: sel === MUSIC_ROWS - 1 ? 1.03 : 1 }} className="rounded-2xl py-4 text-center text-2xl font-semibold"
           style={sel === MUSIC_ROWS - 1 ? { background: grad(100), boxShadow: `0 10px 34px ${a('p', 0.5)}` } : { background: 'rgba(255,255,255,.08)' }}>Done</motion.div>
         <div className="mt-4 text-center text-base text-white/40">Up / Down choose  ·  Left / Right adjust  ·  B close</div>
