@@ -50,6 +50,7 @@ export default function Dashboard() {
   const [modal, setModal] = useState(null)
   const [awake, setAwake] = useState(true)     // button-hint dock visibility
   const [toast, setToast] = useState(null)
+  const [mouseOn, setMouseOn] = useState(false)    // Controller Mouse (the cursor is driven by the input bridge in main.js)
   const [volShow, setVolShow] = useState(false)
   const dirty = useRef(false)
   const timers = useRef({})
@@ -87,6 +88,12 @@ export default function Dashboard() {
   const later = (key, fn, ms) => { clearTimeout(timers.current[key]); timers.current[key] = setTimeout(fn, ms) }
   const poke = () => { setAwake(true); later('awake', () => setAwake(false), 4500) }
   const notify = (text, tone = 'info') => { setToast({ text, tone }); later('toast', () => setToast(null), 3200); if (tone === 'error') sfx.error() }
+  useEffect(() => {
+    window.shell.mouseGet().then(setMouseOn).catch(() => {})
+    window.shell.onMouse(setMouseOn)
+    window.shell.onHud((text) => notify(text))
+  }, [])   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { document.body.classList.toggle('mouse-on', mouseOn) }, [mouseOn])   // show the real cursor while it is in use
   const flashVol = () => { setVolShow(true); later('vol', () => setVolShow(false), 1500) }
   const open = (m) => setModal({ ...m, prev: modal })           // open a modal; B returns to the one we came from
 
@@ -353,7 +360,7 @@ export default function Dashboard() {
   }
 
   // Quick menu
-  const quickIds = ['volume', 'music', 'wifi', 'bluetooth', ...(st.brightness?.supported ? ['brightness'] : []), 'shortcuts']
+  const quickIds = ['volume', 'music', 'mouse', 'wifi', 'bluetooth', ...(st.brightness?.supported ? ['brightness'] : []), 'shortcuts']
   const quickAdjust = (dir) => {
     const id = quickIds[modal.sel], d = dir === 'right' ? 1 : -1
     if (id === 'volume') { if (st.volume !== null) sys.setVolume(st.volume + d * 5); else sys.volKey(d > 0 ? 'up' : 'down', 2) }
@@ -365,6 +372,7 @@ export default function Dashboard() {
     const id = quickIds[modal.sel]
     if (id === 'volume') { if (st.volume !== null) sys.toggleMute(); else sys.volKey('mute') }
     if (id === 'music') { if (music.media.active) music.command('toggle'); else open({ type: 'music', sel: 1, tsel: 1 }) }
+    if (id === 'mouse') window.shell.mouseToggle()
     if (id === 'wifi') openWifi()
     if (id === 'bluetooth') openBt()
     if (id === 'shortcuts') {
@@ -382,6 +390,7 @@ export default function Dashboard() {
   const submitKeyboard = () => modal.onSubmit(modal.value)
 
   const { connected } = useGamepadNav({
+    paused: mouseOn,        // Controller Mouse is driving the cursor: don't also navigate the launcher (no double-firing)
     onMove: (dir) => {
       poke()
       if (splash || modal?.type === 'busy' || launching) return
@@ -462,7 +471,8 @@ export default function Dashboard() {
     },
     onQuick: () => {
       poke()
-      if (splash || locked || launching || modal?.type === 'busy' || modal?.type === 'pin') return
+      if (splash || locked || modal?.type === 'busy' || modal?.type === 'pin') return
+      if (launching) return window.shell.overlayToggle()      // game starting: the quick menu opens as the overlay window instead of being blocked
       sfx.ok()
       if (modal?.type === 'quick') return setModal(null)
       sys.refresh(); sys.refreshPad(); music.refresh()
@@ -487,7 +497,7 @@ export default function Dashboard() {
 
   const folder = data?.config.gamesFolders[0]
   const modalEl = !modal ? null
-    : modal.type === 'quick' ? <QuickMenu key="q" media={music.media} status={st} rows={quickIds} sel={modal.sel} sc={modal.sc ?? 0} padName={padLabel()} padIds={padIds()} pad={sys.pad} />
+    : modal.type === 'quick' ? <QuickMenu key="q" media={music.media} status={st} rows={quickIds} sel={modal.sel} sc={modal.sc ?? 0} padName={padLabel()} padIds={padIds()} pad={sys.pad} mouse={mouseOn} />
     : modal.type === 'appearance' ? <Appearance key="ap" theme={theme} sel={modal.sel} />
     : modal.type === 'music' ? <MusicPanel key="mu" media={music.media} sel={modal.sel} tsel={modal.tsel} busyId={musicBusy} />
     : modal.type === 'pin' ? <PinModal key="pin" {...pinProps(modal)} />

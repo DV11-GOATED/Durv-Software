@@ -14,17 +14,18 @@ const EMPTY = { active: false }
 
 // What's playing right now. Reads Windows' media session, so it works with Spotify, Apple Music, a browser tab, anything
 // that shows up in the Windows volume flyout. Music keeps playing while a game runs because the app itself is separate.
-export function useMedia() {
+export function useMedia({ poll = true } = {}) {
   const [media, setMedia] = useState(EMPTY)
   const dead = useRef(0)
   const refresh = useCallback(async () => {
     try { setMedia(await window.shell.media()); dead.current = 0 } catch { dead.current += 1 }
   }, [])
   useEffect(() => {
+    if (!poll) return
     refresh()
     const t = setInterval(() => { if (document.visibilityState !== 'hidden' && dead.current < 5) refresh() }, 5000)
     return () => clearInterval(t)
-  }, [refresh])
+  }, [refresh, poll])
   const command = useCallback(async (action) => {
     setMedia((m) => (action === 'toggle' && m.active ? { ...m, status: m.status === 'Playing' ? 'Paused' : 'Playing' } : m))   // instant feedback
     try { setMedia(await window.shell.mediaCmd(action)) } catch {}

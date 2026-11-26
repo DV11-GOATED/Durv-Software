@@ -4,7 +4,7 @@ const EMPTY = { volume: null, muted: false, wifi: { supported: false }, bluetoot
 const clamp = (v) => Math.max(0, Math.min(100, Math.round(v)))
 
 // Live system status (volume, Wi-Fi, Bluetooth, controller battery) + optimistic setters.
-export function useSystem() {
+export function useSystem({ poll = true } = {}) {
   const [status, setStatus] = useState(EMPTY)
   const [pad, setPad] = useState(null)      // connected Bluetooth controller with a battery reading
   const ref = useRef(EMPTY)
@@ -12,7 +12,7 @@ export function useSystem() {
   const volTimer = useRef(), briTimer = useRef()
 
   const refresh = useCallback(async () => { try { setStatus(await window.shell.sysStatus()) } catch {} }, [])
-  useEffect(() => { refresh(); const t = setInterval(refresh, 15000); return () => clearInterval(t) }, [refresh])
+  useEffect(() => { if (!poll) return; refresh(); const t = setInterval(refresh, 15000); return () => clearInterval(t) }, [refresh, poll])
 
   // Controller battery from the Bluetooth device properties (slower query, so it has its own timer)
   const refreshPad = useCallback(async () => {
@@ -23,7 +23,7 @@ export function useSystem() {
       setPad(list[0] ? { name: list[0].name, battery: list[0].battery } : null)
     } catch {}
   }, [])
-  useEffect(() => { refreshPad(); const t = setInterval(refreshPad, 60000); return () => clearInterval(t) }, [refreshPad])
+  useEffect(() => { if (!poll) return; refreshPad(); const t = setInterval(refreshPad, 60000); return () => clearInterval(t) }, [refreshPad, poll])
 
   const setVolume = (v) => {
     v = clamp(v)

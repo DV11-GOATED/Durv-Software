@@ -33,6 +33,7 @@ function makeSprite(rgb, hard) {
 }
 
 /* ───────────── procedural audio ───────────── */
+let liveAudio = null;   // only ever one boot sound: a remount closes the previous one instead of layering over it
 function createAudio(getMuted) {
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!AC) return null;
@@ -161,8 +162,12 @@ function createAudio(getMuted) {
     srcs.forEach((o) => { try { o.stop(); } catch (e) {} try { o.disconnect(); } catch (e) {} });
     [bus, dry, wet, conv, comp, fader, out].forEach((n) => { try { n.disconnect(); } catch (e) {} });
     ctx.close && ctx.close().catch(() => {});
+    if (liveAudio === api) liveAudio = null;
   }
-  return { ctx, out, fader, schedule, close };
+  const api = { ctx, out, fader, schedule, close };
+  if (liveAudio) liveAudio.close();
+  liveAudio = api;
+  return api;
 }
 
 /* ───────────── component ───────────── */
@@ -222,7 +227,7 @@ export default function StartupAnimation({ onComplete, onDone, theme, sound = tr
     /* audio */
     const audio = createAudio(() => soundRef.current === false);
     const tryStart = () => {
-      if (!audio || scheduled || stopped || audio.ctx.state !== "running") return;
+      if (!audio || scheduled || stopped || start == null || audio.ctx.state !== "running") return;   // never ahead of the picture
       scheduled = true; audio.schedule(elapsed());
     };
     const resume = () => {
@@ -421,9 +426,16 @@ export default function StartupAnimation({ onComplete, onDone, theme, sound = tr
       layer.style.transform = `scale(${(1 + 0.03 * f).toFixed(4)})`;
     };
 
+    const t0 = performance.now();
     const frame = (now) => {
       if (stopped) return;
-      if (start == null) start = now;
+      if (start == null) {
+        // Lock sound and picture together: hold the first frame until the audio context is really running (700 ms at most),
+        // then start the timeline AND the sound from this same frame. Window / fullscreen hiccups can no longer desync them.
+        if (audio && audio.ctx.state !== "running" && performance.now() - t0 < 700) { resume(); raf = requestAnimationFrame(frame); return; }
+        start = now;
+        tryStart();
+      }
       const sec = (now - start) / 1000, t = Math.min(sec, DURATION);
       // adaptive quality: if the device struggles, drop resolution and particle counts once
       if (prev && sec < 2.6 && sec > 0.3 && !lowQ) {
@@ -444,7 +456,7 @@ export default function StartupAnimation({ onComplete, onDone, theme, sound = tr
       window.removeEventListener("keydown", onInput);
       window.removeEventListener("pointerdown", onInput);
       window.removeEventListener("splash:skip", onSkipEvt);
-      if (audio) { audio.ctx.removeEventListener("statechange", tryStart); audio.close(); }
+      if (audio) { audio.ctx.removeEventListener("statechange", tryStart); setTimeout(audio.close, 350); }   // let the tail finish
     };
   }, []);
 

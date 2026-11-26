@@ -11,6 +11,9 @@ const KEYMAP = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight
  * D-pad 12-15, left stick axes 0/1, A/Cross 0, B/Circle 1, X/Square 2, Y/Triangle 3,
  * LB/RB 4/5, View/Select 8, Menu/Start 9, Guide/PS 16.
  * Handlers: onMove(dir) onConfirm onBack onX onY onStart onQuick onBumper(-1|1)
+ * `paused: true` silences everything (Controller Mouse is driving the cursor instead).
+ * Select/View is a chord prefix (Select+Start, Select+LB are global combos), so it fires onQuick on RELEASE, and only if no other
+ * button was pressed while it was held. The Guide/PS button still fires immediately.
  * Keyboard for dev: arrows, Enter, Esc, X, Y, M (menu), Q (quick), [ ] (bumpers).
  */
 export function useGamepadNav(handlers) {
@@ -21,8 +24,10 @@ export function useGamepadNav(handlers) {
   useEffect(() => {
     const held = {}
     let raf
+    let selDown = false, selArmed = false
     const emit = (name) => {
       const h = ref.current
+      if (h.paused) return
       if (DIRS.includes(name)) h.onMove?.(name)
       else if (name === 'lb') h.onBumper?.(-1)
       else if (name === 'rb') h.onBumper?.(1)
@@ -32,8 +37,11 @@ export function useGamepadNav(handlers) {
       const pads = [...(navigator.getGamepads?.() || [])].filter(Boolean)
       setConnected(pads.length > 0)
       const down = new Set()
+      let sel = false, other = false
       for (const p of pads) {
         const b = (i) => p.buttons[i]?.pressed
+        if (b(8)) sel = true
+        if ([0, 1, 2, 3, 4, 5, 6, 7, 9, 12, 13, 14, 15].some(b)) other = true
         const x = p.axes[0] || 0, y = p.axes[1] || 0
         if (b(12) || y < -DEADZONE) down.add('up')
         if (b(13) || y > DEADZONE) down.add('down')
@@ -45,9 +53,12 @@ export function useGamepadNav(handlers) {
         if (b(3)) down.add('y')
         if (b(4)) down.add('lb')
         if (b(5)) down.add('rb')
-        if (b(8) || b(16)) down.add('quick')
+        if (b(16)) down.add('quick')
         if (b(9)) down.add('start')
       }
+      if (sel) { if (!selDown) { selDown = true; selArmed = true } if (other) selArmed = false }
+      else if (selDown) { selDown = false; if (selArmed) emit('quick') }
+      if (sel) down.clear()                                  // nothing else acts while Select is held
       for (const name of [...REPEATING, ...Object.keys(HANDLER)]) {
         const h = held[name]
         if (down.has(name)) {

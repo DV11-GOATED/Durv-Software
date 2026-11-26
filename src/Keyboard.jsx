@@ -46,11 +46,10 @@ export function pressKey(m) {
   }
 }
 
-export function KeyboardView({ m }) {
+export function KeyboardView({ m, dock = false, hint }) {
   const rows = buildRows(m)
   const shown = m.mask && !m.show ? '•'.repeat(m.value.length) : m.value
-  return (
-    <Overlay>
+  const body = (
       <div className={`w-[980px] rounded-[32px] p-9 ${glass}`}>
         <h2 className="text-3xl font-semibold">{m.title}</h2>
         <div className="mt-5 flex h-16 items-center rounded-2xl bg-black/35 px-6 text-3xl">
@@ -70,8 +69,12 @@ export function KeyboardView({ m }) {
             </div>
           ))}
         </div>
-        <div className="mt-5 text-center text-base text-white/45">A type  ·  X delete  ·  Y space  ·  Menu done  ·  B cancel</div>
+        <div className="mt-5 text-center text-base text-white/45">{hint || 'A type  ·  X delete  ·  Y space  ·  Menu done  ·  B cancel'}</div>
       </div>
-    </Overlay>
+  )
+  if (!dock) return <Overlay>{body}</Overlay>
+  return (
+    <motion.div initial={{ y: 80, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 80, opacity: 0 }}
+      className="absolute inset-x-0 bottom-8 z-30 grid place-items-center">{body}</motion.div>
   )
 }
