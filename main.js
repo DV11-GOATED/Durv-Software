@@ -8,7 +8,7 @@ const { pathToFileURL } = require('url')
 const sys = require('./lib/sys')
 const security = require('./lib/security')
 const { steamGames } = require('./lib/steam')
-const padwatch = require('./lib/padwatch')
+const bridge = require('./lib/inputbridge')
 
 // Same data folder in dev and packaged builds: %APPDATA%\Durv Software
 app.setName('Durv Software')
@@ -51,9 +51,10 @@ const DEFAULT_CONFIG = {
   sort: 'recent',               // recent | playtime | name
   startupAnimation: true,
   startupSound: true,
-  padWatch: true,                 // listen to the controller while another app is in front (LT+RT back, RT tab switch)
-  returnHoldMs: 600,              // hold LT + RT this long to jump back to Durv Software
-  tabApps: ['chrome', 'msedge', 'firefox', 'brave', 'opera', 'vivaldi'],   // RT = next tab only while one of these is in front
+  inputBridge: true,              // background controller reader: LT+RT switcher, hold RT = home, Select+Start menu, Controller Mouse
+  returnHoldMs: 700,              // hold RT this long to jump back to Durv Software
+  overlayHoldMs: 300,             // hold Select + Start this long to open the in-game menu
+  minimizeOnLaunch: false,        // true = minimize the shell when a game's window appears (default: leave it fullscreen behind the game)
   closeExplorerWithMusic: true,   // "Close music" also closes Explorer, but only if Durv Software started it
   ignore: ['unins', 'setup', 'redist', 'vcredist', 'vc_redist', 'dxsetup', 'crash', 'dotnet', 'installer', 'updater', 'helper', 'easyanticheat', 'battleye'],
 }
@@ -231,55 +232,37 @@ async function pack() {
 }
 
 // ---------- window ----------
-// "Windowed fullscreen": a frameless window sized exactly to the screen. Not exclusive fullscreen / kiosk, so other apps,
-// Alt+Tab and Windows popups keep working, and Windows still hides the taskbar while we are in front.
-let homeDisplayId = null
-let windowed = false          // F11: small window instead of filling the screen
-const homeDisplay = () => {
-  const all = screen.getAllDisplays()
-  return all.find((d) => d.id === homeDisplayId) || screen.getPrimaryDisplay()
-}
-function fillScreen() {
-  if (!win || win.isDestroyed()) return
-  win.setBounds(homeDisplay().bounds)        // land on the right monitor first
-  if (!win.isFullScreen()) win.setFullScreen(true)   // Electron's normal (non-kiosk) fullscreen: borderless, no taskbar, Alt+Tab still works
-}
-function toggleWindowed() {
-  if (!win || win.isDestroyed()) return
-  windowed = !windowed
-  if (!windowed) return fillScreen()
-  if (win.isFullScreen()) win.setFullScreen(false)
-  const b = homeDisplay().bounds, w = 1280, h = 720
-  win.setBounds({ x: b.x + Math.round((b.width - w) / 2), y: b.y + Math.round((b.height - h) / 2), width: w, height: h })
+// One borderless fullscreen window on the primary display. Not kiosk / always-on-top, so games and other apps come in front of it.
+const hwndOf = (w) => {                  // native window handle as a decimal string, for the input bridge
+  try { const b = w.getNativeWindowHandle(); return String(b.length >= 8 ? b.readBigUInt64LE(0) : b.readUInt32LE(0)) } catch { return '' }
 }
 
-// Windows only hands focus to a window it considers "foreground", and the page only receives controller input once the
-// web contents (not just the window) has focus. Ask nicely first, then force it, and retry for a few seconds.
 function focusWin() {
   if (!win || win.isDestroyed()) return
   if (win.isMinimized()) win.restore()
   win.show(); win.moveTop(); win.focus(); win.webContents.focus()
   app.focus({ steal: true })
 }
+// Chromium only feeds the Gamepad API to a page whose window has OS focus, and Windows refuses focus to a background
+// process. So: ask, then have the input bridge force it, and keep retrying until the page really has focus.
 function grabFocus() {
   focusWin()
   let n = 0
   const t = setInterval(() => {
     if (!win || win.isDestroyed() || (win.isFocused() && win.webContents.isFocused()) || ++n > 25) return clearInterval(t)
     focusWin()
-    padwatch.focus()                                                      // PowerShell trick (own process), for when Windows blocks plain focus()
-    if (n === 3) sys.takeFocus(process.pid).catch(() => {})               // same trick via the helper, in case padWatch is off
+    bridge.focus(hwndOf(win))
   }, 700)
 }
 
 function createWindow() {
   const appIcon = path.join(__dirname, 'build', 'Durv Software_cover.ico')
-  const home = screen.getPrimaryDisplay()
-  homeDisplayId = home.id
+  const b = screen.getPrimaryDisplay().bounds
   win = new BrowserWindow({
     title: 'Durv Software',
     icon: fs.existsSync(appIcon) ? appIcon : undefined,
-    ...home.bounds, frame: false, fullscreenable: true,
+    x: b.x, y: b.y, width: b.width, height: b.height,      // open on the primary display
+    fullscreen: true, frame: false,
     backgroundColor: '#0a0a12', show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -287,33 +270,142 @@ function createWindow() {
       autoplayPolicy: 'no-user-gesture-required',   // startup chime + UI sounds
     },
   })
-  win.webContents.on('before-input-event', (e, input) => {   // F11 toggles windowed (handy in dev)
-    if (input.type === 'keyDown' && input.key === 'F11') { toggleWindowed(); e.preventDefault() }
+  if (isDev) win.webContents.on('before-input-event', (e, input) => {      // F11 leaves / re-enters fullscreen while developing
+    if (input.type === 'keyDown' && input.key === 'F11') { win.setFullScreen(!win.isFullScreen()); e.preventDefault() }
   })
-  win.once('ready-to-show', () => { fillScreen(); win.show(); grabFocus() })
-  win.on('enter-full-screen', () => setTimeout(focusWin, 150))      // the fullscreen switch can drop focus
+  win.once('ready-to-show', () => { win.show(); bridge.setShell(hwndOf(win)); grabFocus() })
+  // Whenever the window is activated (startup, back from a game, back from the overlay) the page must get focus too,
+  // otherwise it ignores the controller until the first click.
+  win.on('focus', () => { if (win && !win.isDestroyed()) win.webContents.focus() })
+  win.on('restore', () => setTimeout(focusWin, 100))
+  win.on('enter-full-screen', () => setTimeout(focusWin, 150))
   win.webContents.on('did-finish-load', () => { if (win && !win.isDestroyed() && win.isVisible()) win.webContents.focus() })
   isDev ? win.loadURL('http://localhost:5173') : win.loadFile(path.join(__dirname, 'dist', 'index.html'))
 }
 
+// Bring the shell back over whatever is running (game ended, hold RT, second launch of the exe).
 function reclaim() {
-  if (!win) return
+  if (!win || win.isDestroyed()) return
+  hideOverlay({ restore: false })
   if (win.isMinimized()) win.restore()
   win.setAlwaysOnTop(true); win.show(); win.focus(); win.webContents.focus()
-  if (!windowed) fillScreen()
-  setTimeout(() => win && win.setAlwaysOnTop(false), 600)
+  bridge.focus(hwndOf(win))
+  if (!win.isFullScreen()) win.setFullScreen(true)
+  setTimeout(() => win && !win.isDestroyed() && win.setAlwaysOnTop(false), 600)
   win.webContents.send('shell:returned')
   sys.status().catch(() => {})
 }
 
 // Same as reclaim() but silent: used after we start a music app so its window doesn't keep the shell hidden.
 function bringBack() {
-  if (!win) return
+  if (!win || win.isDestroyed()) return
   if (win.isMinimized()) win.restore()
   win.setAlwaysOnTop(true); win.show(); win.focus(); win.webContents.focus()
-  if (!windowed) fillScreen()
-  setTimeout(() => win && win.setAlwaysOnTop(false), 600)
+  bridge.focus(hwndOf(win))
+  setTimeout(() => win && !win.isDestroyed() && win.setAlwaysOnTop(false), 600)
 }
+
+// ---------- in-game overlay + Controller Mouse ----------
+// A second, transparent, always-on-top window that holds the Quick Menu (and the on-screen keyboard) over whatever is
+// running. Its input does NOT come from the page's Gamepad API (that stops when a game has focus) but from the bridge.
+let overlayWin = null
+let overlayView = 'hidden'          // hidden | quick | keyboard | hud
+let overlayTimer = null
+let mouseOn = false
+
+const toBoth = (ch, ...args) => { for (const w of [win, overlayWin]) if (w && !w.isDestroyed()) w.webContents.send(ch, ...args) }
+// nav: overlay or keyboard open (d-pad goes to them) | mouse: Controller Mouse | idle: only the global combos
+const syncMode = () => bridge.setMode(overlayView === 'quick' || overlayView === 'keyboard' ? 'nav' : mouseOn ? 'mouse' : 'idle')
+
+function createOverlay() {
+  if (overlayWin && !overlayWin.isDestroyed()) return overlayWin
+  const b = screen.getPrimaryDisplay().bounds
+  overlayWin = new BrowserWindow({
+    x: b.x, y: b.y, width: b.width, height: b.height,
+    transparent: true, frame: false, alwaysOnTop: true, skipTaskbar: true, focusable: true,
+    resizable: false, movable: false, minimizable: false, maximizable: false, fullscreenable: false, hasShadow: false,
+    show: false, backgroundColor: '#00000000',
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, backgroundThrottling: false },
+  })
+  overlayWin.setAlwaysOnTop(true, 'screen-saver')       // above borderless / windowed games without minimizing them
+  overlayWin.hide()
+  if (isDev) overlayWin.loadURL('http://localhost:5173/#overlay')
+  else overlayWin.loadFile(path.join(__dirname, 'dist', 'index.html'), { hash: 'overlay' })
+  overlayWin.on('closed', () => { overlayWin = null; overlayView = 'hidden' })
+  return overlayWin
+}
+
+function showOverlay(view = 'quick') {
+  const o = createOverlay()
+  clearTimeout(overlayTimer)
+  const interactive = view === 'quick'                  // the quick menu takes focus; the keyboard / HUD must not (typing goes to the app)
+  if (overlayView === 'hidden' || overlayView === 'hud') bridge.saveForeground()   // remember the game so focus can be handed straight back
+  else if (view === 'keyboard' && overlayView === 'quick') bridge.restoreForeground()
+  o.setBounds(screen.getPrimaryDisplay().bounds)
+  o.setAlwaysOnTop(true, 'screen-saver')
+  o.setFocusable(interactive)
+  o.setIgnoreMouseEvents(!interactive)
+  overlayView = view
+  syncMode()
+  o.webContents.send('overlay:show', { view, mouse: mouseOn })
+  if (interactive) { o.show(); o.moveTop(); o.focus(); o.webContents.focus(); bridge.focus(hwndOf(o)) }
+  else o.showInactive()
+}
+
+function hideOverlay(opt = {}) {
+  clearTimeout(overlayTimer)
+  if (overlayView === 'hidden') return
+  const was = overlayView
+  overlayView = 'hidden'
+  syncMode()
+  if (overlayWin && !overlayWin.isDestroyed()) { overlayWin.setIgnoreMouseEvents(true); overlayWin.hide() }
+  if (opt.restore !== false && was !== 'hud') bridge.restoreForeground()   // hand OS focus straight back to the game
+}
+
+const toggleOverlay = () => (overlayView === 'hidden' ? showOverlay('quick') : hideOverlay())
+
+// Brief, click-through, non-focusable indicator (e.g. "Controller Mouse: On").
+function hud(text) {
+  if (win && !win.isDestroyed() && win.isFocused()) return win.webContents.send('hud', text)
+  if (overlayView === 'quick' || overlayView === 'keyboard') return overlayWin && overlayWin.webContents.send('hud', text)
+  const o = createOverlay()
+  if (overlayView === 'hidden') { o.setBounds(screen.getPrimaryDisplay().bounds); o.setAlwaysOnTop(true, 'screen-saver'); o.setFocusable(false); o.setIgnoreMouseEvents(true) }
+  overlayView = 'hud'
+  syncMode()
+  o.webContents.send('overlay:show', { view: 'hud', text, mouse: mouseOn })
+  o.showInactive()
+  clearTimeout(overlayTimer)
+  overlayTimer = setTimeout(() => { if (overlayView === 'hud') hideOverlay({ restore: false }) }, 1800)
+}
+
+function setMouse(on) {
+  mouseOn = !!on
+  syncMode()
+  toBoth('mouse:state', mouseOn)
+  hud(`Controller Mouse: ${mouseOn ? 'On' : 'Off'}`)
+  return mouseOn
+}
+
+function onBridge(line) {
+  if (line === 'RETURN') reclaim()                              // the bridge has already put the window in front
+  else if (line === 'OVERLAY') toggleOverlay()
+  else if (line === 'MOUSE_TOGGLE') setMouse(!mouseOn)
+  else if (line === 'KEYBOARD') { if (overlayView !== 'keyboard') showOverlay('keyboard') }
+  else if (line === 'SWITCH_START') hideOverlay({ restore: false })
+  else if (line.startsWith('NAV ')) {
+    if ((overlayView === 'quick' || overlayView === 'keyboard') && overlayWin && !overlayWin.isDestroyed()) overlayWin.webContents.send('overlay:nav', line.slice(4))
+  }
+}
+
+ipcMain.handle('overlay:toggle', () => { toggleOverlay(); return overlayView })
+ipcMain.handle('overlay:hide', () => { hideOverlay(); return true })
+ipcMain.handle('overlay:keyboard', () => { showOverlay('keyboard'); return true })
+ipcMain.handle('overlay:switcher', () => { hideOverlay(); setTimeout(() => bridge.switcher(), 250); return true })
+ipcMain.handle('overlay:home', () => { reclaim(); return true })
+ipcMain.handle('mouse:get', () => mouseOn)
+ipcMain.handle('mouse:toggle', () => setMouse(!mouseOn))
+ipcMain.handle('kb:type', (_e, text) => { bridge.type(String(text).slice(0, 64)); return true })
+ipcMain.handle('kb:key', (_e, k) => { if (['bksp', 'enter', 'esc', 'tab'].includes(k)) bridge.key(k); return true })
 
 // Is a URL scheme (e.g. com.epicgames.launcher) actually registered in Windows?
 const protocolRegistered = (scheme) => new Promise((res) =>
@@ -647,7 +739,7 @@ ipcMain.handle('app:launch', async (_e, id) => {
   lastLaunchAt = Date.now()
   waitForGame(g, proc, token, isRunning || (async () => false)).then((r) => {
     if (launchToken === token) launchToken = null
-    if (r === 'ready') { sendGame('ready'); setTimeout(() => win && win.minimize(), 600) }
+    if (r === 'ready') { sendGame('ready'); if (loadCfg().minimizeOnLaunch) setTimeout(() => win && !win.isDestroyed() && win.minimize(), 600) }
     else if (r === 'timeout') sendGame('timeout')
   })
   return { ok: true }
@@ -664,7 +756,7 @@ ipcMain.handle('system:power', (_e, action) => {
 if (!app.requestSingleInstanceLock()) app.quit()
 else {
   app.on('second-instance', reclaim)
-  app.on('before-quit', () => { padwatch.stop(); sys.stop() })
+  app.on('before-quit', () => { bridge.stop(); sys.stop() })
   app.whenReady().then(() => {
     ensureFiles()
     sys.init(dataDir())
@@ -677,8 +769,9 @@ else {
       return net.fetch(pathToFileURL(file).toString())
     })
     createWindow()
+    createOverlay()                  // created hidden, so the first Select + Start is instant
     const cfg = loadCfg()
-    if (cfg.padWatch !== false) padwatch.start(dataDir(), { tabApps: cfg.tabApps, holdMs: cfg.returnHoldMs, pid: process.pid }, () => { if (win && !win.isFocused()) reclaim() })
+    if (cfg.inputBridge !== false) bridge.start(dataDir(), { pid: process.pid, returnHoldMs: cfg.returnHoldMs, comboHoldMs: cfg.overlayHoldMs }, onBridge)
   })
   app.on('window-all-closed', () => app.quit())
 }

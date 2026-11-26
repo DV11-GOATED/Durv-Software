@@ -21,4 +21,13 @@ contextBridge.exposeInMainWorld('shell', {
   media: call('media:get'), mediaCmd: call('media:cmd'), musicOpen: call('music:open'), musicClose: call('music:close'),
   cancelLaunch: call('launch:cancel'),
   onGame: (cb) => ipcRenderer.on('shell:game', (_e, ev) => cb(ev)),
+  // in-game overlay, Controller Mouse, typing into other apps
+  overlayToggle: call('overlay:toggle'), overlayHide: call('overlay:hide'), overlayKeyboard: call('overlay:keyboard'),
+  overlaySwitcher: call('overlay:switcher'), overlayHome: call('overlay:home'),
+  mouseGet: call('mouse:get'), mouseToggle: call('mouse:toggle'),
+  kbType: call('kb:type'), kbKey: call('kb:key'),
+  onOverlayShow: (cb) => ipcRenderer.on('overlay:show', (_e, d) => cb(d)),
+  onNav: (cb) => ipcRenderer.on('overlay:nav', (_e, n) => cb(n)),
+  onMouse: (cb) => ipcRenderer.on('mouse:state', (_e, on) => cb(on)),
+  onHud: (cb) => ipcRenderer.on('hud', (_e, text) => cb(text)),
 })
