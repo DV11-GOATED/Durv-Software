@@ -3,6 +3,7 @@
 // the Electron main process over stdin / stdout (one line per message). Nothing is spawned per poll.
 //
 // stdout (events):   READY | RETURN | OVERLAY | MOUSE_TOGGLE | KEYBOARD | SWITCH_START | SWITCH_END | NAV <name>
+// Combos: hold L2+R2+L3+R3 = task switcher | hold L1+R1+L3+R3 = back to Durv Software | hold Select+Start = overlay | Select+LB = mouse.
 // stdin  (commands): MODE idle|mouse|nav | SHELL <hwnd> | FOCUS <hwnd> | SAVEFG | RESTOREFG | TYPE <base64 utf8> |
 //                    KEY bksp|enter|esc|tab | SWITCH | QUIT
 using System;
@@ -37,6 +38,7 @@ public class Core
 {
     public const int DPAD_UP = 0x0001, DPAD_DOWN = 0x0002, DPAD_LEFT = 0x0004, DPAD_RIGHT = 0x0008;
     public const int START = 0x0010, BACK = 0x0020, LB = 0x0100, RB = 0x0200;
+    public const int THUMB_L = 0x0040, THUMB_R = 0x0080;           // L3 / R3 (stick clicks)
     public const int BTN_A = 0x1000, BTN_B = 0x2000, BTN_X = 0x4000, BTN_Y = 0x8000;
     public const int VK_TAB = 0x09, VK_ESC = 0x1B, VK_LSHIFT = 0xA0, VK_LMENU = 0xA4;
 
@@ -45,13 +47,14 @@ public class Core
 
     readonly ISink s;
     readonly int appPid, returnHold, comboHold;
+    readonly long switchHold;              // L2 + R2 + L3 + R3 must be down this long (ms) to open the switcher
     string mode = "idle";
     public string Mode { get { return mode; } }
 
     int prevB; long last;
-    bool ltOn, rtOn, rtWas;
-    long bothSince = -1; bool bothFired;
-    long rtSince; bool rtFired, rtLtSeen;
+    bool ltOn, rtOn, homeWas;
+    long swSince = -1; bool swFired;
+    long homeSince; bool homeFired;
     long cooldownUntil;
     long ssSince = -1; bool ssFired;
     bool selChord, startChord;
@@ -66,9 +69,10 @@ public class Core
     readonly long[] repNext = new long[6];
     static readonly string[] RepNames = { "up", "down", "left", "right", "lb", "rb" };
 
-    public Core(ISink sink, int appPid, int returnHoldMs, int comboHoldMs)
+    public Core(ISink sink, int appPid, int returnHoldMs, int comboHoldMs, int switcherHoldMs = 500)
     {
         s = sink; this.appPid = appPid;
+        switchHold = switcherHoldMs < 100 ? 500 : switcherHoldMs;
         returnHold = returnHoldMs < 200 ? 700 : returnHoldMs;
         comboHold = comboHoldMs < 100 ? 300 : comboHoldMs;
     }
@@ -138,7 +142,7 @@ public class Core
         {
             ReleaseMouse();
             if (swActive) EndSwitcher(false, now);
-            prevB = 0; ltOn = rtOn = rtWas = false; bothSince = -1; bothFired = false; ssSince = -1; ssFired = false;
+            prevB = 0; ltOn = rtOn = homeWas = false; swSince = -1; swFired = false; ssSince = -1; ssFired = false;
             return;
         }
 
@@ -166,33 +170,37 @@ public class Core
             s.Emit("MOUSE_TOGGLE");
         }
 
-        // ---- LT + RT together: Alt+Tab style switcher ----
-        bool both = ltOn && rtOn;
-        bool bothEdge = false;
-        if (both)
-        {
-            if (bothSince < 0) bothSince = now;
-            if (!bothFired && now - bothSince >= 60) { bothFired = true; bothEdge = true; }
-        }
-        else { bothSince = -1; bothFired = false; }
+        // L1+R1+L3+R3 = home, L2+R2+L3+R3 = switcher. They share L3+R3, so each one requires the other's pair to be UP:
+        // pressing all six opens neither.
+        const int HOME_COMBO = LB | RB | THUMB_L | THUMB_R;
+        const int STICKS = THUMB_L | THUMB_R;
+        bool homeHeld = (b & HOME_COMBO) == HOME_COMBO && !ltOn && !rtOn;
 
-        // ---- RT held on its own: back to Durv Software ----
-        if (rtOn && !rtWas) { rtSince = now; rtLtSeen = ltOn; rtFired = false; }
-        if (rtOn && ltOn) rtLtSeen = true;
-        if (rtOn && !rtFired && !rtLtSeen && !swActive && now - rtSince >= returnHold && now >= cooldownUntil)
+        // ---- L2 + R2 + L3 + R3 held together: Alt+Tab style switcher ----
+        bool swHeld = ltOn && rtOn && (b & STICKS) == STICKS && (b & (LB | RB)) == 0;
+        bool swEdge = false;
+        if (swHeld)
         {
-            rtFired = true;
+            if (swSince < 0) swSince = now;
+            if (!swFired && now - swSince >= switchHold) { swFired = true; swEdge = true; }
+        }
+        else { swSince = -1; swFired = false; }
+
+        // ---- hold L1 + R1 + L3 + R3 together: back to Durv Software ----
+        if (homeHeld && !homeWas) { homeSince = now; homeFired = false; }
+        if (homeHeld && !homeFired && !swActive && now - homeSince >= returnHold && now >= cooldownUntil)
+        {
+            homeFired = true;
             cooldownUntil = now + 1200;
             if (s.ForegroundPid() != appPid) { s.TakeShell(); s.Emit("RETURN"); }
         }
-        if (bothEdge && rtFired) bothEdge = false;        // RT hold already did its job
-        rtWas = rtOn;
+        homeWas = homeHeld;
 
         // ---- switcher is open: it owns the pad ----
         if (swActive)
         {
             bool did = false;
-            if (bothEdge || (pressed & (RB | DPAD_RIGHT | DPAD_DOWN)) != 0) { Tab(false); did = true; }
+            if ((pressed & (RB | DPAD_RIGHT | DPAD_DOWN)) != 0) { Tab(false); did = true; }
             else if ((pressed & (LB | DPAD_LEFT | DPAD_UP)) != 0) { Tab(true); did = true; }
             if (did) swLast = now;
             if ((pressed & BTN_A) != 0) EndSwitcher(false, now);
@@ -201,7 +209,7 @@ public class Core
             if ((released & BACK) != 0) selChord = false;
             return;
         }
-        if (bothEdge && now >= cooldownUntil) { StartSwitcher(now); return; }
+        if (swEdge && now >= cooldownUntil) { StartSwitcher(now); return; }
 
         if ((released & BACK) != 0) selChord = false;
         bool startWasChord = startChord;                      // Select+Start must never count as a plain Start press
@@ -431,12 +439,12 @@ public static class Bridge
         }
     }
 
-    public static void Run(int appPid, int returnHoldMs, int comboHoldMs)
+    public static void Run(int appPid, int returnHoldMs, int comboHoldMs, int switcherHoldMs)
     {
         try { Native.SetProcessDPIAware(); } catch (Exception) { }     // physical pixels, so SetCursorPos matches what is on screen
         try { Native.timeBeginPeriod(1); } catch (Exception) { }
         WinSink sink = new WinSink(appPid);
-        Core core = new Core(sink, appPid, returnHoldMs, comboHoldMs);
+        Core core = new Core(sink, appPid, returnHoldMs, comboHoldMs, switcherHoldMs);
 
         Thread reader = new Thread(delegate ()
         {
