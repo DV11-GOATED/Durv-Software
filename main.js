@@ -51,9 +51,10 @@ const DEFAULT_CONFIG = {
   sort: 'recent',               // recent | playtime | name
   startupAnimation: true,
   startupSound: true,
-  inputBridge: true,              // background controller reader: LT+RT switcher, hold RT = home, Select+Start menu, Controller Mouse
-  returnHoldMs: 700,              // hold RT this long to jump back to Durv Software
+  inputBridge: true,              // background controller reader: L2+R2+L3+R3 switcher, L1+R1+L3+R3 home, Select+Start menu, Controller Mouse
+  returnHoldMs: 700,              // hold L1 + R1 + L3 + R3 this long to jump back to Durv Software
   overlayHoldMs: 300,             // hold Select + Start this long to open the in-game menu
+  switcherHoldMs: 500,            // hold L2 + R2 + L3 + R3 this long to open the Alt+Tab switcher
   minimizeOnLaunch: false,        // true = minimize the shell when a game's window appears (default: leave it fullscreen behind the game)
   closeExplorerWithMusic: true,   // "Close music" also closes Explorer, but only if Durv Software started it
   ignore: ['unins', 'setup', 'redist', 'vcredist', 'vc_redist', 'dxsetup', 'crash', 'dotnet', 'installer', 'updater', 'helper', 'easyanticheat', 'battleye'],
@@ -283,7 +284,7 @@ function createWindow() {
   isDev ? win.loadURL('http://localhost:5173') : win.loadFile(path.join(__dirname, 'dist', 'index.html'))
 }
 
-// Bring the shell back over whatever is running (game ended, hold RT, second launch of the exe).
+// Bring the shell back over whatever is running (game ended, hold L1+R1+L3+R3, second launch of the exe).
 function reclaim() {
   if (!win || win.isDestroyed()) return
   hideOverlay({ restore: false })
@@ -771,7 +772,7 @@ else {
     createWindow()
     createOverlay()                  // created hidden, so the first Select + Start is instant
     const cfg = loadCfg()
-    if (cfg.inputBridge !== false) bridge.start(dataDir(), { pid: process.pid, returnHoldMs: cfg.returnHoldMs, comboHoldMs: cfg.overlayHoldMs }, onBridge)
+    if (cfg.inputBridge !== false) bridge.start(dataDir(), { pid: process.pid, returnHoldMs: cfg.returnHoldMs, comboHoldMs: cfg.overlayHoldMs, switcherHoldMs: cfg.switcherHoldMs }, onBridge)
   })
   app.on('window-all-closed', () => app.quit())
 }
