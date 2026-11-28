@@ -2,7 +2,7 @@
 // ONE long-running process reads XInput for every pad, runs the global combos, drives the virtual mouse, and talks to
 // the Electron main process over stdin / stdout (one line per message). Nothing is spawned per poll.
 //
-// stdout (events):   READY | RETURN | OVERLAY | MOUSE_TOGGLE | KEYBOARD | SWITCH_START | SWITCH_END | NAV <name>
+// stdout (events):   READY | PAD 0/1 | DBG ... (only with CS_DEBUG=1) | RETURN | OVERLAY | MOUSE_TOGGLE | KEYBOARD | SWITCH_START | SWITCH_END | NAV <name>
 // Combos: hold L2+R2+L3+R3 = task switcher | hold L1+R1+L3+R3 = back to Durv Software | hold Select+Start = overlay | Select+LB = mouse.
 // stdin  (commands): MODE idle|mouse|nav | SHELL <hwnd> | FOCUS <hwnd> | SAVEFG | RESTOREFG | TYPE <base64 utf8> |
 //                    KEY bksp|enter|esc|tab | SWITCH | QUIT
@@ -439,8 +439,11 @@ public static class Bridge
         }
     }
 
-    public static void Run(int appPid, int returnHoldMs, int comboHoldMs, int switcherHoldMs)
+    public static void Run(int appPid, int returnHoldMs, int comboHoldMs, int switcherHoldMs, string debug)
     {
+        bool dbg = debug == "1";
+        bool padSeen = false, lastConn = false;
+        int lastBtn = -1, lastTrig = -1;
         try { Native.SetProcessDPIAware(); } catch (Exception) { }     // physical pixels, so SetCursorPos matches what is on screen
         try { Native.timeBeginPeriod(1); } catch (Exception) { }
         WinSink sink = new WinSink(appPid);
@@ -484,6 +487,17 @@ public static class Bridge
                 double mr = Math.Abs((double)st.Pad.RX) + Math.Abs((double)st.Pad.RY);
                 if (ml > bestL) { bestL = ml; p.LX = st.Pad.LX; p.LY = st.Pad.LY; }
                 if (mr > bestR) { bestR = mr; p.RX = st.Pad.RX; p.RY = st.Pad.RY; }
+            }
+            // Tell the log whether a pad is visible at all. No "PAD 1" ever = the pad is not an XInput device.
+            if (!padSeen || p.Connected != lastConn) { padSeen = true; lastConn = p.Connected; sink.Emit(p.Connected ? "PAD 1" : "PAD 0"); }
+            if (dbg && p.Connected)
+            {
+                int trig = (p.LT > 170 ? 1 : 0) | (p.RT > 170 ? 2 : 0);
+                if (p.Buttons != lastBtn || trig != lastTrig)
+                {
+                    lastBtn = p.Buttons; lastTrig = trig;
+                    sink.Emit("DBG buttons=0x" + p.Buttons.ToString("X4") + " LT=" + p.LT + " RT=" + p.RT);
+                }
             }
             string mode;
             lock (gate) { core.Tick(p, now); mode = core.Mode; }
